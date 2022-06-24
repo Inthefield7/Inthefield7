@@ -1,7 +1,7 @@
 ### Hello World 👋
 
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-3766d5.svg?style=flat&logo=github)](https://github.com/Inthefield7)
-<img alt="VISITORS" src="https://komarev.com/ghpvc/?username=Inthefield7&style=flat&labelColor=lightgrey&logo=github&label=PROFILE+VIEWS&color=3766d5"/>
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-58a6ff.svg?style=flat&logo=github)](https://github.com/Inthefield7)
+<img alt="VISITORS" src="https://komarev.com/ghpvc/?username=Inthefield7&style=flat&labelColor=lightgrey&logo=github&label=PROFILE+VIEWS&color=58a6ff"/>
 ## I'm **Erik** and welcome to my GitHub profile!
 <!--
 **Inthefield7/Inthefield7** is a ✨ _special_ ✨ repository because its `README.md` (this file) appears on your GitHub profile.
