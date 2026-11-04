@@ -1,0 +1,194 @@
+# Run-Tests.ps1 - dependency-free tests for the analysis, report, and offline pipeline.
+# Runs on Windows PowerShell 5.1 and PowerShell 7 (any OS). Exit code = number of failures.
+$ErrorActionPreference = 'Stop'
+$root = Split-Path $PSScriptRoot -Parent
+. (Join-Path $root 'lib\DD.Analysis.ps1')
+. (Join-Path $root 'lib\DD.Report.ps1')
+$fixtures = Join-Path $PSScriptRoot 'fixtures'
+
+$script:passed = 0
+$script:failed = New-Object System.Collections.Generic.List[string]
+function Test-That {
+    param([string]$Name, [scriptblock]$Body)
+    try {
+        $ok = & $Body
+        if ($ok -eq $true) { $script:passed++; Write-Host "  PASS $Name" -ForegroundColor Green }
+        else { $script:failed.Add($Name); Write-Host "  FAIL $Name (got: $ok)" -ForegroundColor Red }
+    }
+    catch { $script:failed.Add($Name); Write-Host "  FAIL $Name (threw: $($_.Exception.Message))" -ForegroundColor Red }
+}
+
+function Get-Base { Get-Content -Raw -LiteralPath (Join-Path $fixtures 'envy-screenshots.snapshot.json') | ConvertFrom-Json }
+function Find-F { param($A, [string]$Id) $A.Findings | Where-Object { $_.Id -eq $Id } | Select-Object -First 1 }
+function Find-FLike { param($A, [string]$Pattern) $A.Findings | Where-Object { $_.Id -like $Pattern } | Select-Object -First 1 }
+
+$gpuId = 'PCI\VEN_8086&DEV_7D45&SUBSYS_8C66103C&REV_08\3&11583659&0&10'
+$fwId = 'UEFI\RES_{F9A422C9-7892-42C3-A237-218610BFD215}\0'
+
+Write-Host 'Primitives' -ForegroundColor Cyan
+Test-That 'hex string parses' { (ConvertTo-DDInt '0xE') -eq 14 }
+Test-That 'signed DWORD NTSTATUS normalizes' { (ConvertTo-DDInt -1073741102) -eq 3221226194 }
+Test-That 'hex literal keys decode (0xC00002D2)' { (Get-DDNtStatusInfo '0xC00002D2').Name -eq 'STATUS_PNP_REBOOT_REQUIRED' }
+Test-That 'internal error decodes' { (Get-DDNtStatusInfo 3221225701).Name -eq 'STATUS_INTERNAL_ERROR' }
+Test-That 'unknown status stays raw, not guessed' { (Get-DDNtStatusInfo '0xC0000719').Name -eq 'Unrecognized status' }
+Test-That 'problem code 14 is NEED_RESTART' { (Get-DDProblemInfo 14).Name -eq 'CM_PROB_NEED_RESTART' }
+Test-That 'firmware AC status from signed registry value' { $i = Get-DDFirmwareAttemptInfo -1073741101; $i.Transient -and $i.Name -like 'Power event: AC*' }
+Test-That 'eDP / INTERNAL output tech detected' { (Test-DDInternalOutputTechnology 11) -and (Test-DDInternalOutputTechnology 2147483648) -and -not (Test-DDInternalOutputTechnology 10) }
+Test-That 'monitor path -> instance id' { (ConvertFrom-DDMonitorDevicePath '\\?\DISPLAY#CMN163B#4&5423816&0&UID0#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}') -eq 'DISPLAY\CMN163B\4&5423816&0&UID0' }
+Test-That 'CMN panel recognized as likely internal' { (Test-DDLikelyPanelInstance 'DISPLAY\CMN163B\4&5423816&0&UID0') -and -not (Test-DDLikelyPanelInstance 'DISPLAY\DELA1F0\5&x&0&UID1') }
+Test-That 'Get-DDArray unrolls for @()' { @(Get-DDArray @(1, 2, 3)).Count -eq 3 -and @(Get-DDArray $null).Count -eq 0 -and @(Get-DDArray 5).Count -eq 1 }
+
+Write-Host 'Parsers (exact text from the screenshots)' -ForegroundColor Cyan
+$m411 = "Device PCI\VEN_8086&DEV_7D45&SUBSYS_8C66103C&REV_08\3&11583659&0&10 had a problem starting.`r`n`r`nDriver Name: oem39.inf`r`nClass GUID: {4d36e968-e325-11ce-bfc1-08002be10318}`r`nService: igfxn`r`nLower Filters: `r`nUpper Filters: `r`nProblem: 0x0`r`nProblem Status: 0xC00000E5"
+$e411 = ConvertFrom-DDPnpEvent -Id 411 -TimeCreated '2026-08-27T00:49:44Z' -Message $m411
+Test-That '411 device id' { $e411.DeviceInstanceId -eq $gpuId }
+Test-That '411 fields' { $e411.DriverName -eq 'oem39.inf' -and $e411.Service -eq 'igfxn' -and $e411.Problem -eq 0 -and $e411.ProblemStatus -eq 3221225701 }
+$m412 = "Device UEFI\RES_{f9a422c9-7892-42c3-a237-218610bfd215}\0 requires a system reboot before it can be started.`r`n`r`nDriver Name: oem32.inf`r`nClass GUID: {f2e7dd72-6468-4e36-b6f1-6488f42c1b52}`r`nService: `r`nLower Filters: `r`nUpper Filters: `r`nProblem: 0xE`r`nProblem Status: 0xC00002D2"
+$e412 = ConvertFrom-DDPnpEvent -Id 412 -TimeCreated '2026-08-27T00:28:43Z' -Message $m412
+Test-That '412 empty Service stays empty (no line bleed)' { [string]::IsNullOrEmpty($e412.Service) -and $e412.Problem -eq 14 -and $e412.ProblemStatus -eq 3221226194 }
+$m442 = "Device settings for DISPLAY\Default_Monitor\1&8713bca&0&UID0 were not migrated from previous OS installation due to partial or ambiguous device match.`r`n`r`nLast Device Instance ID: DISPLAY\CMN163B\4&5423816&0&UID0`r`nClass GUID: {4d36e96e-e325-11ce-bfc1-08002be10318}`r`nLocation Path: `r`nMigration Rank: 0xF000FFFF0000F120`r`nPresent: false`r`nStatus: 0xC0000719"
+$e442 = ConvertFrom-DDPnpEvent -Id 442 -TimeCreated '2026-08-27T00:49:44Z' -Message $m442
+Test-That '442 migration fields' { $e442.DeviceInstanceId -eq 'DISPLAY\Default_Monitor\1&8713bca&0&UID0' -and $e442.LastInstanceId -eq 'DISPLAY\CMN163B\4&5423816&0&UID0' -and $e442.Present -eq $false }
+Test-That 'EventData wins over message' { (ConvertFrom-DDPnpEvent -Id 411 -TimeCreated '2026-01-01T00:00:00Z' -Message $m411 -EventData @{ Problem = '10' }).Problem -eq 10 }
+$ci = ConvertFrom-DDCodeIntegrityEvent -Id 3033 -TimeCreated '2026-10-02T15:00:00Z' -Message 'Code Integrity determined that a process (\Device\HarddiskVolume3\Windows\System32\lsass.exe) attempted to load \Device\HarddiskVolume3\Program Files\Bonjour\mdnsNSP.dll that did not meet the Microsoft signing level requirements.'
+Test-That 'Code Integrity LSA block parsed' { $ci.Process -like '*lsass.exe' -and $ci.Module -like '*\Bonjour\mdnsNSP.dll' -and $ci.Enforced -eq $true }
+$wu = ConvertFrom-DDWindowsUpdateEvent -Id 20 -TimeCreated '2026-08-27T00:00:00Z' -Message 'Installation Failure: Windows failed to install the following update with error 0x80070103: Intel Corporation - Display - 31.0.101.4502.'
+Test-That 'WU failure parsed' { $wu.ErrorCode -eq '0x80070103' -and $wu.Title -eq 'Intel Corporation - Display - 31.0.101.4502' }
+$store = @(ConvertFrom-DDPnputilDriverList (Get-Content -Raw -LiteralPath (Join-Path $fixtures 'pnputil-enum-drivers.txt')))
+Test-That 'pnputil list parsed' { $store.Count -eq 3 -and $store[0].PublishedName -eq 'oem39.inf' -and $store[0].Version -eq '32.0.101.5768' -and $store[0].Date -eq '07/12/2024' }
+
+Write-Host 'Scenario A: screenshots (GPU start failure this boot, panel missing, firmware staged)' -ForegroundColor Cyan
+$a = Invoke-DDAnalysis -Snapshot (Get-Base)
+Test-That 'verdict = NotDetected-GpuFault' { $a.Verdict.State -eq 'NotDetected-GpuFault' }
+Test-That 'verdict is INFERRED, not VERIFIED (it connects facts)' { $a.Verdict.Confidence -eq 'INFERRED' }
+Test-That 'verdict evidence cites the missing CMN163B panel and event 442' { (($a.Verdict.Evidence -join "`n") -match 'CMN163B') -and (($a.Verdict.Evidence -join "`n") -match 'Event 442') }
+$g = Find-F $a "GPU:$gpuId"
+Test-That 'GPU finding is High (failed this boot, currently code 0)' { $g.Severity -eq 'High' }
+Test-That 'GPU action: restart device first' { $g.Actions[0].Type -eq 'RestartDevice' -and $g.Actions[0].Target -eq $gpuId }
+Test-That 'GPU evidence decodes 0xC00000E5' { ($g.Evidence -join ' ') -match 'STATUS_INTERNAL_ERROR' }
+$fw = Find-F $a "DEVICE:$fwId"
+Test-That 'code 14 after a later boot + registry success -> Medium, no "refused" claim' { $fw.Severity -eq 'Medium' -and (($fw.Evidence -join ' ') -match 'after that request') -and ($fw.Interpretation -match 'installed successfully') }
+$s = Get-Base; $s.Firmware = @()
+Test-That 'code 14 after a later boot, no registry record -> High (update not applying)' { (Find-F (Invoke-DDAnalysis -Snapshot $s) "DEVICE:$fwId").Severity -eq 'High' }
+Test-That 'timeline ignores a single device install pair (400+412)' { @($a.Findings | Where-Object { $_.Category -eq 'Timeline' }).Count -eq 1 }
+$pr = Find-F $a 'PENDING-RESTART'
+Test-That 'pending restart mentions Fast Startup' { ($pr.Evidence -join ' ') -match 'Fast Startup is ON' }
+$bon = Find-FLike $a 'CI:*'
+Test-That 'Bonjour LSA block is Low and explicitly NOT linked to display' { $bon.Severity -eq 'Low' -and $bon.Interpretation -match 'No connection to the display' }
+Test-That 'Bonjour recommendation keeps LSA protection on' { $bon.Recommendation -match 'Keep LSA protection ON' }
+$tl = @($a.Findings | Where-Object { $_.Category -eq 'Timeline' })
+Test-That 'timeline links 411 + 442 in the same window as OS migration' { @($tl | Where-Object { $_.Interpretation -match 'Windows upgrade or reinstall' }).Count -eq 1 }
+Test-That 'HPIA skipped -> no false "not found" claim' { $null -eq (Find-F $a 'HPIA-MISSING') }
+$plan = @(Get-DDRepairPlan -Findings $a.Findings)
+Test-That 'plan: RestartDevice before ScanDevices before RestartComputer' {
+    $types = @($plan | ForEach-Object { $_.Type })
+    $types.IndexOf('RestartDevice') -lt $types.IndexOf('ScanDevices') -and $types.IndexOf('ScanDevices') -lt $types.IndexOf('RestartComputer')
+}
+Test-That 'plan: RestartComputer appears once (deduplicated)' { @($plan | Where-Object { $_.Type -eq 'RestartComputer' }).Count -eq 1 }
+Test-That 'plan: never contains uninstall/disable/delete actions' { @($plan | Where-Object { $_.Type -match 'Uninstall|Disable|Delete|Remove' }).Count -eq 0 }
+
+Write-Host 'Scenario B: healthy' -ForegroundColor Cyan
+$s = Get-Base
+$s.PnpEvents = @(); $s.Devices = @($s.Devices | Where-Object { $_.Class -ne 'Firmware' })
+$s.PendingRestart.FastStartup = $false
+$s.CodeIntegrityEvents = @()
+$s.DisplayTargets[0].Available = $true; $s.DisplayTargets[0].Active = $true
+$b = Invoke-DDAnalysis -Snapshot $s
+Test-That 'verdict Active' { $b.Verdict.State -eq 'Active' }
+Test-That 'no Critical/High/Medium findings' { @($b.Findings | Where-Object { $_.Severity -in 'Critical', 'High', 'Medium' }).Count -eq 0 }
+Test-That 'empty plan' { @(Get-DDRepairPlan -Findings $b.Findings).Count -eq 0 }
+
+Write-Host 'Scenario C: panel detected but layout excludes it' -ForegroundColor Cyan
+$s = Get-Base; $s.PnpEvents = @(); $s.DisplayTargets[0].Available = $true
+$c = Invoke-DDAnalysis -Snapshot $s
+Test-That 'verdict Inactive (VERIFIED)' { $c.Verdict.State -eq 'Inactive' -and $c.Verdict.Confidence -eq 'VERIFIED' }
+Test-That 'action ExtendTopology (never internal-only)' { (Find-F $c 'INTERNAL-PANEL').Actions[0].Type -eq 'ExtendTopology' }
+
+Write-Host 'Scenario D: internal monitor disabled' -ForegroundColor Cyan
+$s = Get-Base; $s.PnpEvents = @()
+$panel = $s.Devices | Where-Object { $_.InstanceId -like 'DISPLAY\CMN163B*' }; $panel.Present = $true; $panel.ProblemCode = 22
+$d = Invoke-DDAnalysis -Snapshot $s
+Test-That 'verdict Disabled + EnableDevice on the panel' { $d.Verdict.State -eq 'Disabled' -and (Find-F $d 'INTERNAL-PANEL').Actions[0].Type -eq 'EnableDevice' -and (Find-F $d 'INTERNAL-PANEL').Actions[0].Target -like 'DISPLAY\CMN163B*' }
+
+Write-Host 'Scenario E: brightness 0' -ForegroundColor Cyan
+$s = Get-Base; $s.PnpEvents = @(); $s.DisplayTargets[0].Available = $true; $s.DisplayTargets[0].Active = $true
+$s.Brightness = @([pscustomobject]@{ InstanceName = 'DISPLAY\CMN163B\4&5423816&0&UID0_0'; CurrentBrightness = 0; Active = $true })
+$e = Invoke-DDAnalysis -Snapshot $s
+Test-That 'verdict BrightnessZero + SetBrightness' { $e.Verdict.State -eq 'BrightnessZero' -and (Find-F $e 'INTERNAL-PANEL').Actions[0].Type -eq 'SetBrightness' }
+
+Write-Host 'Scenario F: GPU on Microsoft Basic Display driver' -ForegroundColor Cyan
+$s = Get-Base; $s.PnpEvents = @(); ($s.Devices | Where-Object { $_.Class -eq 'Display' }).Service = 'BasicDisplay'
+$f = Invoke-DDAnalysis -Snapshot $s
+Test-That 'GPU Critical' { (Find-F $f "GPU:$gpuId").Severity -eq 'Critical' }
+Test-That 'verdict NotDetected-GpuFault even without events' { $f.Verdict.State -eq 'NotDetected-GpuFault' }
+
+Write-Host 'Scenario G: no GPU fault, panel missing -> points away from the driver' -ForegroundColor Cyan
+$s = Get-Base; $s.PnpEvents = @()
+$gg = Invoke-DDAnalysis -Snapshot $s
+Test-That 'verdict NotDetected with hardware next step' { $gg.Verdict.State -eq 'NotDetected' -and $gg.Verdict.NextStep -match 'F2' }
+
+Write-Host 'Scenario G2: GPU failed in an earlier boot, same moment the panel vanished' -ForegroundColor Cyan
+$s = Get-Base; $s.Meta.LastBoot = '2026-10-01T12:00:00.0000000Z'
+$g2 = Invoke-DDAnalysis -Snapshot $s
+Test-That 'verdict NotDetected-GpuHistory (connected by same boot)' { $g2.Verdict.State -eq 'NotDetected-GpuHistory' -and (($g2.Verdict.Evidence -join ' ') -match 'same boot') }
+Test-That 'GPU finding downgraded to Low history (not current state)' { $gf = Find-F $g2 "GPU:$gpuId"; $gf.Severity -eq 'Low' -and -not $gf.StateBased }
+Test-That 'history verdict still plans GPU restart + driver steps' { $t = @((Find-F $g2 'INTERNAL-PANEL').Actions | ForEach-Object { $_.Type }); ($t -contains 'RestartDevice') -and ($t -contains 'ScanDevices') }
+$s = Get-Base; $s.Meta.LastBoot = '2026-10-01T12:00:00.0000000Z'; $s.PnpEvents = @($s.PnpEvents | Where-Object { $_.Id -ne 442 })
+Test-That 'without the 442 link, no driver blame (NotDetected)' { (Invoke-DDAnalysis -Snapshot $s).Verdict.State -eq 'NotDetected' }
+
+Write-Host 'Scenario H: firmware deferred for AC power' -ForegroundColor Cyan
+$s = Get-Base; $s.Firmware[0].LastAttemptStatus = -1073741101
+$h = Invoke-DDAnalysis -Snapshot $s
+$hf = Find-FLike $h 'FIRMWARE:*'
+Test-That 'firmware finding Medium + transient advice' { $hf.Severity -eq 'Medium' -and $hf.Recommendation -match 'AC adapter' }
+Test-That 'device evidence shows decoded firmware status' { ((Find-F $h "DEVICE:$fwId").Evidence -join ' ') -match 'Power event: AC not connected' }
+Test-That 'device interpretation follows the failed firmware status' { (Find-F $h "DEVICE:$fwId").Interpretation -match 'not applied' }
+
+Write-Host 'Scenario I: restart requested after last boot (normal staging)' -ForegroundColor Cyan
+$s = Get-Base; $s.Meta.LastBoot = '2026-08-26T12:00:00.0000000Z'
+$i = Invoke-DDAnalysis -Snapshot $s
+Test-That 'firmware code 14 = Medium, "has not fully restarted since"' { $fd = Find-F $i "DEVICE:$fwId"; $fd.Severity -eq 'Medium' -and (($fd.Evidence -join ' ') -match 'has not fully restarted') }
+
+Write-Host 'Scenario J: firmware held back without consent' -ForegroundColor Cyan
+$s = Get-Base; $s.Firmware[0].LastAttemptStatus = '0xC0000022'
+$s.HPIA = [pscustomobject]@{ Present = $true; Recommendations = @() }
+$j = Invoke-DDAnalysis -Snapshot $s
+$pj = @(Get-DDRepairPlan -Findings $j.Findings)
+Test-That 'no HPIA firmware install without -IncludeFirmware' { @($pj | Where-Object { $_.Type -eq 'HPIAInstall' -and $_.Target -match 'BIOS|Firmware' }).Count -eq 0 -and @($pj | Where-Object { $_.Type -eq 'Manual' -and $_.Target -eq 'firmware' }).Count -eq 1 }
+$pj2 = @(Get-DDRepairPlan -Findings $j.Findings -IncludeFirmware)
+Test-That 'with -IncludeFirmware the HPIA step covers BIOS/Firmware' { @($pj2 | Where-Object { $_.Type -eq 'HPIAInstall' -and $_.Target -eq 'Drivers,BIOS,Firmware' }).Count -eq 1 }
+
+Write-Host 'Scenario K: Windows Update offer connected to a faulted device' -ForegroundColor Cyan
+$s = Get-Base
+$s.WindowsUpdate = [pscustomobject]@{ Searched = $true; Error = $null; Updates = @([pscustomobject]@{ UpdateId = 'u-1'; Title = 'Intel Corporation - Display - 32.0.101.9999'; DriverClass = 'Display'; DriverModel = 'Intel(R) Graphics'; DriverProvider = 'Intel Corporation'; DriverVerDate = '2026-09-01'; HardwareId = 'PCI\VEN_8086&DEV_7D45&SUBSYS_8C66103C' }) }
+$k = Invoke-DDAnalysis -Snapshot $s
+Test-That 'update linked by hardware id -> High' { $u = Find-F $k 'WU-UPDATE:u-1'; $u.Severity -eq 'High' -and (($u.Evidence -join ' ') -match 'same hardware id') }
+Test-That 'GPU actions include that exact update' { @((Find-F $k "GPU:$gpuId").Actions | Where-Object { $_.Type -eq 'InstallWindowsUpdate' -and $_.Target -eq 'u-1' }).Count -eq 1 }
+
+Write-Host 'Before/after comparison' -ForegroundColor Cyan
+$after = Invoke-DDAnalysis -Snapshot (Get-Base) -EventsSince '2026-10-03T00:00:00Z'
+$cmp = Compare-DDFindings -Before $a.Findings -After $after.Findings
+Test-That 'GPU failures before the repair window no longer count as current' { @($cmp.Fixed | Where-Object { $_.Id -eq "GPU:$gpuId" }).Count -eq 1 }
+Test-That 'history-only findings never reported as fixed' { @($cmp.Fixed | Where-Object { -not $_.StateBased }).Count -eq 0 }
+
+Write-Host 'Report' -ForegroundColor Cyan
+$evil = Get-Base; ($evil.Devices | Where-Object { $_.Class -eq 'Display' }).Name = '<script>alert(1)</script>'
+$html = ConvertTo-DDHtmlReport -Snapshot $evil -Analysis (Invoke-DDAnalysis -Snapshot $evil) -Plan @() -Mode 'Diagnose'
+Test-That 'device names are HTML-encoded' { ($html -notmatch '<script>alert') -and ($html -match '&lt;script&gt;') }
+Test-That 'report leads with the built-in display verdict' { $html.IndexOf('Built-in display') -lt $html.IndexOf('<h2>Findings') }
+
+Write-Host 'End to end (offline snapshot mode)' -ForegroundColor Cyan
+$out = Join-Path ([IO.Path]::GetTempPath()) ("dd-test-" + [guid]::NewGuid().ToString('N'))
+$pwshExe = (Get-Process -Id $PID).Path
+& $pwshExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'DriverDoctor.ps1') -SnapshotPath (Join-Path $fixtures 'envy-screenshots.snapshot.json') -OutputPath $out -NoOpen | Out-Null
+Test-That 'DriverDoctor.ps1 exits 0' { $LASTEXITCODE -eq 0 }
+Test-That 'report.html and findings.json written' { (Test-Path (Join-Path $out 'report.html')) -and (Test-Path (Join-Path $out 'findings.json')) }
+Test-That 'findings.json verdict round-trips' { (Get-Content -Raw (Join-Path $out 'findings.json') | ConvertFrom-Json).Verdict.State -eq 'NotDetected-GpuFault' }
+& $pwshExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'DriverDoctor.ps1') -SnapshotPath (Join-Path $fixtures 'envy-screenshots.snapshot.json') -Mode Repair -OutputPath $out -NoOpen 2>$null | Out-Null
+Test-That 'Repair refuses to run on a snapshot' { $LASTEXITCODE -ne 0 }
+
+Write-Host ''
+$color = if ($script:failed.Count -eq 0) { 'Green' } else { 'Red' }
+Write-Host "Passed: $script:passed  Failed: $($script:failed.Count)" -ForegroundColor $color
+foreach ($n in $script:failed) { Write-Host "  - $n" -ForegroundColor Red }
+exit $script:failed.Count
