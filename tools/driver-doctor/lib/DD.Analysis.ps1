@@ -120,11 +120,16 @@ function ConvertTo-DDInt {
     if ($null -eq $Value) { return $null }
     if ($Value -is [string]) {
         $s = $Value.Trim()
-        if ($s -match '^0[xX]([0-9a-fA-F]+)$') { $n = [Convert]::ToInt64($Matches[1], 16) }
-        elseif ($s -match '^-?\d+$') { $n = [int64]$s }
-        else { return $null }
+        # NEW-9: values come from a snapshot that may be crafted (more than 16 hex digits, a decimal
+        # beyond Int64): the offline analysis returns $null for them, it never throws.
+        try {
+            if ($s -match '^0[xX]([0-9a-fA-F]+)$') { $n = [Convert]::ToInt64($Matches[1], 16) }
+            elseif ($s -match '^-?\d+$') { $n = [int64]::Parse($s, [Globalization.CultureInfo]::InvariantCulture) }
+            else { return $null }
+        }
+        catch { return $null }
     }
-    elseif ($Value -is [double] -or $Value -is [decimal] -or $Value -is [single]) { $n = [int64]$Value }
+    elseif ($Value -is [double] -or $Value -is [decimal] -or $Value -is [single]) { try { $n = [int64]$Value } catch { return $null } }
     elseif ($Value -is [ValueType]) {
         try { $n = [int64]$Value } catch { return $null }
     }
@@ -164,8 +169,10 @@ function Format-DDDate {
 
 function Get-DDProblemInfo {
     param([int64]$Code)
-    if ($script:DDProblemCodes.ContainsKey([int]$Code)) {
-        $e = $script:DDProblemCodes[[int]$Code]
+    # NEW-9: the code comes from the snapshot; one beyond Int32 cannot be a table key and must not throw.
+    $key = if ($Code -ge [int]::MinValue -and $Code -le [int]::MaxValue) { [int]$Code } else { $null }
+    if ($null -ne $key -and $script:DDProblemCodes.ContainsKey($key)) {
+        $e = $script:DDProblemCodes[$key]
         return [pscustomobject]@{ Code = $Code; Name = $e[0]; Meaning = $e[1]; Action = $e[2] }
     }
     return [pscustomobject]@{ Code = $Code; Name = "CM_PROB_$Code"; Meaning = 'Undocumented problem code.'; Action = 'Manual' }

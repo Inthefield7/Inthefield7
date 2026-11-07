@@ -377,6 +377,39 @@ function Get-DDHPSignatureProblem {
     return ''
 }
 
+function Test-DDAdminOnlyPath {
+    # NEW-7: '' when the file and every folder from its own up to and including Root are real folders
+    # (no reparse points) that only administrators can change, each with a trusted owner; otherwise the
+    # reason. Path text alone (Test-DDUnderFolder) is not enough: a user-writable vendor folder under
+    # Program Files, or a junction, would let a user plant a DLL beside a genuine HP exe, or replace
+    # the exe between the signature check and the run. The file itself is checked for the same reason.
+    param([string]$Path, [string]$Root)
+    try {
+        $full = [IO.Path]::GetFullPath($Path)
+        $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    }
+    catch { return 'path could not be resolved' }
+    $items = New-Object System.Collections.Generic.List[string]
+    $items.Add($full)
+    $dir = [IO.Path]::GetDirectoryName($full)
+    while ($dir) {
+        $items.Add($dir)
+        if ([string]::Equals($dir.TrimEnd('\'), $rootFull, [StringComparison]::OrdinalIgnoreCase)) { break }
+        $parent = [IO.Path]::GetDirectoryName($dir)
+        if (-not $parent -or $parent -eq $dir) { return "$full is not under $Root" }
+        $dir = $parent
+    }
+    # Root first, exe last: the reason names the first weak link on the way down (a planted folder), not
+    # the file that merely inherited its permissions.
+    for ($i = $items.Count - 1; $i -ge 0; $i--) {
+        $p = $items[$i]
+        try { $item = Get-Item -LiteralPath $p -Force -ErrorAction Stop } catch { return "$p could not be read: $($_.Exception.Message)" }
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return "$p is a link or junction" }
+        if (-not (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $p).Sddl -RequireTrustedOwner)) { return "$p can be changed by non-administrators" }
+    }
+    return ''
+}
+
 function Find-DDHPIA {
     # SEC-001: run HPIA only from Program Files (only administrators can change it), whether found there
     # or passed with -HPIAPath, and only with a valid HP Inc. signature. C:\HPIA, C:\SWSetup\SP* and an
@@ -393,6 +426,10 @@ function Find-DDHPIA {
     foreach ($c in $candidates) {
         if (-not $c -or -not (Test-Path -LiteralPath $c -PathType Leaf)) { continue }
         if (-not (Test-DDUnderFolder -Path $c -Roots $roots)) { $rejected.Add("$c - not under Program Files, so other users may be able to change it"); continue }
+        # NEW-7: the whole chain from the exe up to its Program Files root must be real and administrators-only.
+        $under = @($roots | Where-Object { Test-DDUnderFolder -Path $c -Roots @($_) })[0]
+        $aclWhy = Test-DDAdminOnlyPath -Path $c -Root $under
+        if ($aclWhy) { $rejected.Add("$c - $aclWhy"); continue }
         $why = Get-DDHPSignatureProblem $c
         if ($why) { $rejected.Add("$c - $why"); continue }
         return [pscustomobject]@{ Path = $c; Rejected = @($rejected) }

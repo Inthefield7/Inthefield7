@@ -318,6 +318,147 @@ if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
     }
 }
 
+Write-Host 'Scenario S9: NEW-9 crafted numbers never throw; NEW-7 HPIA folder chain; NEW-10 gate re-checked before install' -ForegroundColor Cyan
+# NEW-9: pure.
+$n9big = '0x' + ('F' * 17)
+Test-That 'NEW-9: hex beyond 16 digits, a decimal beyond Int64 and a huge double convert to $null, not an exception' {
+    ($null -eq (ConvertTo-DDInt $n9big)) -and ($null -eq (ConvertTo-DDInt '99999999999999999999')) -and ($null -eq (ConvertTo-DDInt '-99999999999999999999')) -and ($null -eq (ConvertTo-DDInt ([double]1e30))) -and
+    ((ConvertTo-DDInt '0xE') -eq 14) -and ((ConvertTo-DDInt ' 14 ') -eq 14) -and ((ConvertTo-DDInt -1073741101) -eq 3221226195)
+}
+Test-That 'NEW-9: a problem code beyond Int32 is reported as undocumented, not an exception' { $pi = Get-DDProblemInfo 281474976710655; $pi.Name -eq 'CM_PROB_281474976710655' -and $pi.Action -eq 'Manual' -and (Get-DDProblemInfo 14).Name -eq 'CM_PROB_NEED_RESTART' }
+$s9 = Get-Base
+$s9.Devices = @($s9.Devices) + @(
+    [pscustomobject]@{ Present = $true; ProblemCode = '0xFFFFFFFFFFFF'; ProblemStatus = $n9big; InstanceId = 'SWD\TESTDEV\0009'; Name = 'Crafted 1'; HardwareIds = @(); Class = 'System'; ClassGuid = ''; DriverInf = 'oem97.inf'; DriverVersion = '1'; DriverProvider = 'x' },
+    [pscustomobject]@{ Present = $true; ProblemCode = '99999999999999999999'; ProblemStatus = '99999999999999999999'; InstanceId = 'SWD\TESTDEV\0010'; Name = 'Crafted 2'; HardwareIds = @(); Class = 'System'; ClassGuid = ''; DriverInf = 'oem96.inf'; DriverVersion = '1'; DriverProvider = 'x' }
+)
+$s9a = $null; $s9html = $null; $s9err = ''
+try { $s9a = Invoke-DDAnalysis -Snapshot $s9; $s9html = ConvertTo-DDHtmlReport -Snapshot $s9 -Analysis $s9a -Plan @(Get-DDRepairPlan -Findings $s9a.Findings) -Mode 'Diagnose' } catch { $s9err = $_.Exception.Message }
+Test-That 'NEW-9: a crafted snapshot goes through analysis and the report without throwing' { $s9err -eq '' -and $null -ne $s9a -and $s9html -match '<html' -and (Find-F $s9a 'DEVICE:SWD\TESTDEV\0009').Title -match 'CM_PROB_281474976710655' -and $null -eq (Find-F $s9a 'DEVICE:SWD\TESTDEV\0010') }
+if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
+    . (Join-Path $root 'lib\DD.Collect.ps1')
+    . (Join-Path $root 'lib\DD.Repair.ps1')
+    # NEW-7: the real Program Files roots must pass the chain check, or every HPIA would be refused.
+    $n7roots = @([Environment]::GetFolderPath('ProgramFiles'), [Environment]::GetFolderPath('ProgramFilesX86') | Where-Object { $_ -and (Test-Path -LiteralPath $_) })
+    Test-That 'NEW-7: the real Program Files roots are administrators-only with a trusted owner' { $n7roots.Count -ge 1 -and @($n7roots | Where-Object { -not (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $_).Sddl -RequireTrustedOwner) }).Count -eq 0 }
+    $n7text = [IO.File]::ReadAllText((Join-Path $root 'lib\DD.Collect.ps1'))
+    Test-That 'NEW-7: Find-DDHPIA checks the folder chain after the path check and before the signature' { $n7text -match '(?s)Test-DDUnderFolder -Path \$c -Roots \$roots\).*?Test-DDAdminOnlyPath -Path \$c -Root \$under.*?Get-DDHPSignatureProblem \$c' }
+    $n7elev = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($n7elev) {
+        $n7root = Join-Path ([IO.Path]::GetTempPath()) ('dd-new7-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        $n7pf = Join-Path $n7roots[0] ('dd-new7-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        try {
+            New-DDSecureDirectory $n7root
+            $n7good = Join-Path $n7root 'HP\HPIA\bin'; New-DDSecureDirectory (Join-Path $n7root 'HP'); New-DDSecureDirectory (Join-Path $n7root 'HP\HPIA'); New-DDSecureDirectory $n7good
+            $n7exe = Join-Path $n7good 'HPImageAssistant.exe'; Set-Content -LiteralPath $n7exe -Value 'x' -Encoding Ascii
+            Test-That 'NEW-7: an administrators-only chain up to the root passes' { (Test-DDAdminOnlyPath -Path $n7exe -Root $n7root) -eq '' }
+            $n7weak = Join-Path $n7root 'Vendor'; New-DDSecureDirectory -Path $n7weak -Sddl 'D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;BU)'
+            $n7weakExe = Join-Path $n7weak 'HPImageAssistant.exe'; Set-Content -LiteralPath $n7weakExe -Value 'x' -Encoding Ascii
+            Test-That 'NEW-7: a user-writable folder in the chain is refused' { (Test-DDAdminOnlyPath -Path $n7weakExe -Root $n7root) -match 'Vendor can be changed by non-administrators' }
+            $n7lnk = Join-Path $n7root 'Link'; New-Item -ItemType Junction -Path $n7lnk -Value $n7good | Out-Null
+            Test-That 'NEW-7: a junction in the chain is refused' { (Test-DDAdminOnlyPath -Path (Join-Path $n7lnk 'HPImageAssistant.exe') -Root $n7root) -match 'Link is a link or junction' }
+            $n7fileAcl = Get-Acl -LiteralPath $n7exe
+            $n7fileAcl.SetAccessRuleProtection($true, $false)
+            $n7fileAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('BUILTIN\Administrators', 'FullControl', 'Allow')))
+            $n7fileAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('BUILTIN\Users', 'Modify', 'Allow')))
+            Set-Acl -LiteralPath $n7exe -AclObject $n7fileAcl
+            Test-That 'NEW-7: an exe that users may rewrite is refused even in a good chain' { (Test-DDAdminOnlyPath -Path $n7exe -Root $n7root) -match 'HPImageAssistant\.exe can be changed by non-administrators' }
+            Test-That 'NEW-7: a path outside the root is refused' { (Test-DDAdminOnlyPath -Path $n7exe -Root (Join-Path $n7root 'HP\HPIA\other')) -match 'is not under' }
+            # The root itself is part of the chain: a weak root with an administrators-only subfolder is refused, naming the root.
+            $n7weakRoot = Join-Path $n7root 'WeakRoot'; New-DDSecureDirectory -Path $n7weakRoot -Sddl 'D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;BU)'
+            $n7wrBin = Join-Path $n7weakRoot 'bin'; New-DDSecureDirectory $n7wrBin
+            $n7wrExe = Join-Path $n7wrBin 'HPImageAssistant.exe'; Set-Content -LiteralPath $n7wrExe -Value 'x' -Encoding Ascii
+            Test-That 'NEW-7: a user-writable root is refused even when the exe folder is administrators-only' { (Test-DDAdminOnlyPath -Path $n7wrExe -Root $n7weakRoot) -match 'WeakRoot can be changed by non-administrators' }
+            # NEW-4 rule applies here too: a folder the user owns is refused even with an administrators-only-looking DACL.
+            $n7owned = Join-Path $n7root 'Owned'; New-DDSecureDirectory $n7owned
+            $n7me = [Security.Principal.WindowsIdentity]::GetCurrent().User
+            $n7ownAcl = Get-Acl -LiteralPath $n7owned; $n7ownAcl.SetOwner($n7me); Set-Acl -LiteralPath $n7owned -AclObject $n7ownAcl
+            $n7ownExe = Join-Path $n7owned 'HPImageAssistant.exe'; Set-Content -LiteralPath $n7ownExe -Value 'x' -Encoding Ascii
+            Test-That 'NEW-7: a folder owned by the user is refused even with an administrators-only DACL' { (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $n7owned).Sddl) -and ((Test-DDAdminOnlyPath -Path $n7ownExe -Root $n7root) -match 'Owned can be changed by non-administrators') }
+            # Wiring: a user-writable folder planted under the real Program Files is refused by Find-DDHPIA before the signature check.
+            New-DDSecureDirectory $n7pf
+            $n7pfWeak = Join-Path $n7pf 'weak'; New-DDSecureDirectory -Path $n7pfWeak -Sddl 'D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;BU)'
+            $n7pfExe = Join-Path $n7pfWeak 'HPImageAssistant.exe'; Set-Content -LiteralPath $n7pfExe -Value 'x' -Encoding Ascii
+            $n7found = Find-DDHPIA -HPIAPath $n7pfExe 3>$null
+            Test-That 'NEW-7: Find-DDHPIA refuses a user-writable folder under Program Files, before the signature check' { $null -eq $n7found.Path -and @($n7found.Rejected).Count -eq 1 -and $n7found.Rejected[0] -match 'weak can be changed by non-administrators' -and $n7found.Rejected[0] -notmatch 'Authenticode' }
+        }
+        finally {
+            if ($n7lnk -and (Test-Path -LiteralPath $n7lnk)) { cmd /c rmdir "$n7lnk" | Out-Null }
+            if (Test-Path -LiteralPath $n7root) { [IO.Directory]::Delete($n7root, $true) }
+            if (Test-Path -LiteralPath $n7pf) { [IO.Directory]::Delete($n7pf, $true) }
+        }
+    }
+    else { Write-Host '  SKIP NEW-7 folder-chain checks on real ACLs (not running as administrator)' -ForegroundColor Yellow }
+    # NEW-10: the real install code paths, with the Windows Update COM session and Start-Process shadowed.
+    $n10saved = @{}
+    foreach ($n in 'Test-DDFirmwareSafe', 'Write-DDBitLockerWarning', 'Find-DDHPIA', 'Get-DDAdminWorkDir', 'New-DDSecureDirectory') { $n10saved[$n] = (Get-Item "function:$n").ScriptBlock }
+    $n10work = Join-Path ([IO.Path]::GetTempPath()) ('dd-new10-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    try {
+        function Write-DDBitLockerWarning { }
+        # Gate: passes on the first call (before the prompt), fails on the second (right before the install).
+        function Test-DDFirmwareSafe { $script:n10gate++; if ($script:n10gate -ge 2 -and $script:n10failSecond) { return @($false, 'stub: AC unplugged') }; return @($true, 'ok') }
+        $script:n10dl = 0; $script:n10inst = 0
+        $n10update = [pscustomobject]@{ DriverClass = 'Firmware'; Title = 'HP Inc. - Firmware - 1.0'; EulaAccepted = $true }
+        $n10search = [pscustomobject]@{ Updates = @($n10update) }
+        $n10searcher = [pscustomobject]@{} | Add-Member -MemberType ScriptMethod -Name Search -Value { $script:n10search } -PassThru
+        $n10dlr = [pscustomobject]@{ Updates = $null } | Add-Member -MemberType ScriptMethod -Name Download -Value { $script:n10dl++; 0 } -PassThru
+        $n10installer = [pscustomobject]@{ Updates = $null } | Add-Member -MemberType ScriptMethod -Name Install -Value { $script:n10inst++; [pscustomobject]@{ ResultCode = 2; RebootRequired = $false; HResult = 0 } } -PassThru
+        $script:n10session = [pscustomobject]@{} |
+            Add-Member -MemberType ScriptMethod -Name CreateUpdateSearcher -Value { $script:n10searcher } -PassThru |
+            Add-Member -MemberType ScriptMethod -Name CreateUpdateDownloader -Value { $script:n10dlr } -PassThru |
+            Add-Member -MemberType ScriptMethod -Name CreateUpdateInstaller -Value { $script:n10installer } -PassThru
+        $script:n10coll = [pscustomobject]@{} | Add-Member -MemberType ScriptMethod -Name Add -Value { 0 } -PassThru
+        $script:n10search = $n10search; $script:n10searcher = $n10searcher; $script:n10dlr = $n10dlr; $script:n10installer = $n10installer
+        function New-Object {
+            # Test shadow of the cmdlet: hands back fake Windows Update COM objects, passes everything else through. Removed below.
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidOverwritingBuiltInCmdlets', '')]
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+            param([Parameter(Position = 0)][string]$TypeName, [string]$ComObject, [object[]]$ArgumentList, [switch]$Strict, $Property)
+            if ($ComObject -eq 'Microsoft.Update.Session') { return $script:n10session }
+            if ($ComObject -eq 'Microsoft.Update.UpdateColl') { return $script:n10coll }
+            Microsoft.PowerShell.Utility\New-Object @PSBoundParameters
+        }
+        $n10act = New-DDAction 'InstallWindowsUpdate' 'u-1' 'x' $true
+        $script:n10gate = 0; $script:n10failSecond = $true; $script:n10dl = 0; $script:n10inst = 0
+        $n10r1 = Invoke-DDInstallWindowsUpdate -Action $n10act -Title 'HP Inc. - Firmware - 1.0' -Confirm:$false
+        Test-That 'NEW-10: WU firmware: the gate is re-checked after the download and before the install; a failed re-check installs nothing' { $n10r1.Result -eq 'Skipped' -and $n10r1.Detail -match 're-checked before install.*AC unplugged' -and $script:n10gate -eq 2 -and $script:n10dl -eq 1 -and $script:n10inst -eq 0 }
+        $script:n10gate = 0; $script:n10failSecond = $false; $script:n10dl = 0; $script:n10inst = 0
+        $n10r2 = Invoke-DDInstallWindowsUpdate -Action $n10act -Title 'HP Inc. - Firmware - 1.0' -Confirm:$false
+        Test-That 'NEW-10: WU firmware: both gate checks pass -> installed once' { $n10r2.Result -eq 'Applied' -and $script:n10gate -eq 2 -and $script:n10inst -eq 1 }
+        Remove-Item function:New-Object
+        # HPIA
+        function Find-DDHPIA { [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '')] param($HPIAPath) [pscustomobject]@{ Path = 'C:\fake\HPImageAssistant.exe'; Rejected = @() } }
+        function Get-DDAdminWorkDir { [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '')] param($Root, $LeafSddl) New-Item -ItemType Directory -Path $n10work -Force | Out-Null; $n10work }
+        function New-DDSecureDirectory { [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')] [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '')] param([string]$Path, [string]$Sddl) New-Item -ItemType Directory -Path $Path -Force | Out-Null }
+        $script:n10sp = 0
+        function Start-Process {
+            # Test shadow of the cmdlet: records the call instead of running HPIA. Removed below.
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidOverwritingBuiltInCmdlets', '')]
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '')]
+            param($FilePath, $ArgumentList, [switch]$Wait, [switch]$PassThru, $WindowStyle)
+            $script:n10sp++; [pscustomobject]@{ ExitCode = 0 }
+        }
+        $n10hp = New-DDAction 'HPIAInstall' 'Drivers,BIOS,Firmware' 'x' $true
+        $script:n10gate = 0; $script:n10failSecond = $true; $script:n10sp = 0
+        $n10h1 = Invoke-DDHPIAInstall -Action $n10hp -Confirm:$false
+        Test-That 'NEW-10: HPIA firmware: the gate is re-checked right before HPIA runs; a failed re-check runs nothing' { $n10h1.Result -eq 'Skipped' -and $n10h1.Detail -match 're-checked before HPIA runs.*AC unplugged' -and $script:n10gate -eq 2 -and $script:n10sp -eq 0 }
+        $script:n10gate = 0; $script:n10failSecond = $false; $script:n10sp = 0
+        $n10h2 = Invoke-DDHPIAInstall -Action $n10hp -Confirm:$false
+        Test-That 'NEW-10: HPIA firmware: both gate checks pass -> HPIA runs once' { $n10h2.Result -eq 'Applied' -and $script:n10gate -eq 2 -and $script:n10sp -eq 1 }
+        $script:n10gate = 0; $script:n10failSecond = $true; $script:n10sp = 0
+        $n10h3 = Invoke-DDHPIAInstall -Action (New-DDAction 'HPIAInstall' 'Drivers' 'x' $false) -Confirm:$false
+        Test-That 'NEW-10: HPIA drivers only: no gate at all, HPIA runs' { $n10h3.Result -eq 'Applied' -and $script:n10gate -eq 0 -and $script:n10sp -eq 1 }
+        Remove-Item function:Start-Process
+    }
+    finally {
+        if (Test-Path function:New-Object) { Remove-Item function:New-Object }
+        if (Test-Path function:Start-Process) { Remove-Item function:Start-Process }
+        foreach ($n in $n10saved.Keys) { Set-Item "function:$n" $n10saved[$n] }
+        Remove-Item -LiteralPath $n10work -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+else { Write-Host '  SKIP NEW-7/NEW-10 system-level checks (Windows only)' -ForegroundColor Yellow }
+
 Write-Host 'Scenario S8: NEW-3 Add-Type compiles with TMP/TEMP in a fresh administrators-only folder' -ForegroundColor Cyan
 if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
     . (Join-Path $root 'lib\DD.Collect.ps1')

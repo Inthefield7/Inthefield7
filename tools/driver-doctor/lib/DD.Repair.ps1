@@ -157,6 +157,12 @@ function Invoke-DDInstallWindowsUpdate {
         $coll = New-Object -ComObject Microsoft.Update.UpdateColl
         foreach ($u in $search.Updates) { if (-not $u.EulaAccepted) { $u.AcceptEula() }; [void]$coll.Add($u) }
         $dl = $session.CreateUpdateDownloader(); $dl.Updates = $coll; [void]$dl.Download()
+        # NEW-10: the gate ran before the prompt and the download; AC can be unplugged in between.
+        # Check again right before the install.
+        if ($isFirmware) {
+            $gate = Test-DDFirmwareSafe
+            if (-not $gate[0]) { return (New-DDResult $Action 'Skipped' "Firmware safety gate (re-checked before install): $($gate[1])") }
+        }
         $inst = $session.CreateUpdateInstaller(); $inst.Updates = $coll
         $res = $inst.Install()
         $codes = @{ 2 = 'Applied'; 3 = 'Applied with errors'; 4 = 'Failed'; 5 = 'Aborted' }
@@ -213,6 +219,11 @@ function Invoke-DDHPIAInstall {
     New-DDSecureDirectory $report
     New-DDSecureDirectory $softpaqs
     $hpiaArgs = @('/Operation:Analyze', "/Category:$categories", '/Selection:All', '/Action:Install', '/Silent', "/ReportFolder:`"$report`"", "/SoftpaqDownloadFolder:`"$softpaqs`"")
+    # NEW-10: the gate ran before the prompt; AC can be unplugged in between. Check again right before HPIA runs.
+    if ($categories -match 'BIOS|Firmware') {
+        $gate = Test-DDFirmwareSafe
+        if (-not $gate[0]) { return (New-DDResult $Action 'Skipped' "Firmware safety gate (re-checked before HPIA runs): $($gate[1])") }
+    }
     $p = Start-Process -FilePath $exe -ArgumentList $hpiaArgs -Wait -PassThru -WindowStyle Hidden
     $known = @{ 0 = 'Applied'; 256 = 'Nothing to install'; 257 = 'Nothing selected'; 3010 = 'Applied (restart required)'; 4096 = 'Platform not supported'; 4097 = 'Invalid parameters' }
     $text = if ($known.ContainsKey($p.ExitCode)) { $known[$p.ExitCode] } else { "Exit code $($p.ExitCode)" }
