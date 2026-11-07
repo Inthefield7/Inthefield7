@@ -129,7 +129,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
     }
     $wu = $Snapshot.WindowsUpdate
     $wuState = if ($null -eq $wu -or -not $wu.Searched) { 'skipped' } elseif ($wu.Error) { 'failed' } else { "searched, $(@(Get-DDArray $wu.Updates).Count) driver update(s) offered" }
-    $hpState = if ($null -eq $Snapshot.HPIA) { 'skipped' } elseif (-not $Snapshot.HPIA.Present) { 'not installed' } elseif ($Snapshot.HPIA.Error) { 'failed' } else { "ran, $(@(Get-DDArray $Snapshot.HPIA.Recommendations).Count) recommendation(s)" }
+    $hpState = if ($null -eq $Snapshot.HPIA) { 'skipped' } elseif (-not $Snapshot.HPIA.Present -and @(Get-DDArray $Snapshot.HPIA.Rejected).Count -gt 0) { 'found but refused (see HPIA-REJECTED)' } elseif (-not $Snapshot.HPIA.Present) { 'not installed' } elseif ($Snapshot.HPIA.Error) { 'failed' } else { "ran, $(@(Get-DDArray $Snapshot.HPIA.Recommendations).Count) recommendation(s)" }
     $null = $sb.Append('<p class="muted">' + (ConvertTo-DDHtml "Windows Update driver search: $wuState. HP Image Assistant: $hpState. Events counted as current since: $(Format-DDDate $Analysis.Since).") + '</p></div>')
     $null = $sb.Append('<p class="muted">VERIFIED = Windows reports it directly. INFERRED = connects separate facts (same device id, same driver, same time window); timing alone is labeled as timing, not cause.</p>')
     $null = $sb.Append('</main></body></html>')

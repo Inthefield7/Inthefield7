@@ -168,8 +168,12 @@ function Test-DDFirmwareSafe {
 function Invoke-DDHPIAInstall {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
     param($Action, [string]$HPIAPath, [string]$WorkDir)
-    $exe = Find-DDHPIA $HPIAPath
-    if (-not $exe) { return (New-DDResult $Action 'Skipped' 'HP Image Assistant not found.') }
+    $found = Find-DDHPIA $HPIAPath
+    $exe = $found.Path
+    if (-not $exe) {
+        $why = if (@($found.Rejected).Count -gt 0) { 'HP Image Assistant not run: ' + (@($found.Rejected) -join '; ') } else { 'HP Image Assistant not found.' }
+        return (New-DDResult $Action 'Skipped' $why)
+    }
     $categories = [string]$Action.Target
     if ($categories -match 'BIOS|Firmware') {
         $gate = Test-DDFirmwareSafe

@@ -338,24 +338,46 @@ function Get-DDWindowsUpdateDrivers {
     return $result
 }
 
+function Get-DDHPSignatureProblem {
+    # SEC-001: HPIA runs elevated, so only a file with a valid Authenticode signature from HP Inc. may run.
+    # Returns '' when the file may run, otherwise the reason it may not.
+    param([string]$Path)
+    try { $sig = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop }
+    catch { return "signature check failed: $($_.Exception.Message)" }
+    if ($sig.Status -ne 'Valid' -or -not $sig.SignerCertificate) { return "Authenticode status: $($sig.Status)" }
+    if (-not (Test-DDHPPublisher $sig.SignerCertificate.Subject)) { return "signed by '$($sig.SignerCertificate.Subject)', not HP Inc." }
+    return ''
+}
+
 function Find-DDHPIA {
+    # SEC-001: run HPIA only from Program Files (only administrators can change it), whether found there
+    # or passed with -HPIAPath, and only with a valid HP Inc. signature. C:\HPIA, C:\SWSetup\SP* and an
+    # unpacked tool folder can be writable by any signed-in user (C:\ grants Authenticated Users
+    # CreateDirectories; C:\SWSetup grants them Modify), and HPIA loads DLLs from its own folder.
+    # Returns Path (or $null) and Rejected (each existing candidate that was refused, with the reason).
     param([string]$HPIAPath)
+    $roots = @([Environment]::GetFolderPath('ProgramFiles'), [Environment]::GetFolderPath('ProgramFilesX86') | Where-Object { $_ })
+    # An explicit -HPIAPath replaces the default; a refused -HPIAPath never falls back to another copy.
     $candidates = @()
     if ($HPIAPath) { $candidates += $HPIAPath; $candidates += (Join-Path $HPIAPath 'HPImageAssistant.exe') }
-    $candidates += @(
-        (Join-Path $env:ProgramFiles 'HP\HPIA\bin\HPImageAssistant.exe'),
-        'C:\HPIA\HPImageAssistant.exe',
-        (Join-Path (Split-Path $PSScriptRoot -Parent) 'HPIA\HPImageAssistant.exe')
-    )
-    $candidates += @(Get-ChildItem 'C:\SWSetup\SP*\HPImageAssistant.exe' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
-    foreach ($c in $candidates) { if ($c -and (Test-Path -LiteralPath $c -PathType Leaf)) { return $c } }
-    return $null
+    else { $candidates += (Join-Path $roots[0] 'HP\HPIA\bin\HPImageAssistant.exe') }
+    $rejected = New-Object System.Collections.Generic.List[string]
+    foreach ($c in $candidates) {
+        if (-not $c -or -not (Test-Path -LiteralPath $c -PathType Leaf)) { continue }
+        if (-not (Test-DDUnderFolder -Path $c -Roots $roots)) { $rejected.Add("$c - not under Program Files, so other users may be able to change it"); continue }
+        $why = Get-DDHPSignatureProblem $c
+        if ($why) { $rejected.Add("$c - $why"); continue }
+        return [pscustomobject]@{ Path = $c; Rejected = @($rejected) }
+    }
+    foreach ($x in $rejected) { Write-Warning "Not running HP Image Assistant: $x" }
+    return [pscustomobject]@{ Path = $null; Rejected = @($rejected) }
 }
 
 function Get-DDHPIAAnalysis {
     param([string]$HPIAPath, [string]$WorkDir)
-    $exe = Find-DDHPIA $HPIAPath
-    $r = [pscustomobject]@{ Present = [bool]$exe; Path = $exe; ExitCode = $null; Error = $null; ReportFolder = $null; Recommendations = @() }
+    $found = Find-DDHPIA $HPIAPath
+    $exe = $found.Path
+    $r = [pscustomobject]@{ Present = [bool]$exe; Path = $exe; HPIAPathGiven = [bool]$HPIAPath; Rejected = @($found.Rejected); ExitCode = $null; Error = $null; ReportFolder = $null; Recommendations = @() }
     if (-not $exe) { return $r }
     $report = Join-Path $WorkDir 'hpia-analyze'
     New-Item -ItemType Directory -Force -Path $report -WhatIf:$false | Out-Null

@@ -237,6 +237,35 @@ function Test-DDLikelyPanelInstance {
     return ($script:DDPanelVendors -contains $v)
 }
 
+function Test-DDHPPublisher {
+    # SEC-001: exact match on the parsed organization (O=) of an Authenticode signer subject.
+    # The name is decoded one RDN per line without quotes, so a quoted CN such as
+    # "Evil, O=HP Inc." or an organization such as "HP Inc, Evil" cannot pass.
+    param([string]$Subject)
+    if (-not $Subject) { return $false }
+    # A control character inside a value (e.g. a line break in the CN) would forge an extra decoded line.
+    if ($Subject -match '[\x00-\x1F\x7F]') { return $false }
+    try {
+        $dn = New-Object System.Security.Cryptography.X509Certificates.X500DistinguishedName($Subject)
+        $flags = [System.Security.Cryptography.X509Certificates.X500DistinguishedNameFlags]'UseNewLines, DoNotUseQuotes'
+        $orgs = @($dn.Decode($flags) -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -like 'O=*' })
+    }
+    catch { return $false }
+    return ($orgs.Count -eq 1 -and $orgs[0] -ceq 'O=HP Inc.')
+}
+
+function Test-DDUnderFolder {
+    # SEC-001: true only when Path, fully resolved, lies inside one of Roots (case-insensitive).
+    param([string]$Path, [string[]]$Roots)
+    if (-not $Path) { return $false }
+    try { $full = [System.IO.Path]::GetFullPath($Path) } catch { return $false }
+    foreach ($r in @($Roots | Where-Object { $_ })) {
+        $root = [System.IO.Path]::GetFullPath($r).TrimEnd('\') + '\'
+        if ($full.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
 function Get-DDFirmwareGuidFromInstance {
     param([string]$InstanceId)
     if ($InstanceId -match 'RES_(\{[0-9A-Fa-f-]{36}\})') { return $Matches[1].ToLowerInvariant() }
@@ -913,11 +942,22 @@ function Invoke-DDAnalysis {
                         -Recommendation 'Install drivers via HPIA (repair mode). BIOS/firmware only with -IncludeFirmware.' -Actions @(New-DDAction 'HPIAInstall' 'Drivers' 'Install HP-recommended driver updates.')))
         }
     }
+    elseif ($hp -and @(Get-DDArray $hp.Rejected).Count -gt 0) {
+        # SEC-001: a copy exists but was not run. Say so; "not found" would be false.
+        $findings.Add((New-DDFinding -Id 'HPIA-REJECTED' -Severity 'Low' -Category 'Updates' -Title 'HP Image Assistant found but not run' `
+                    -Evidence @(Get-DDArray $hp.Rejected | ForEach-Object { [string]$_ }) `
+                    -Interpretation 'Driver Doctor runs as administrator, so it only runs HP Image Assistant from Program Files and only when it carries a valid HP Inc. signature.' `
+                    -Confidence 'VERIFIED' -Recommendation 'Download HP Image Assistant from HP (https://ftp.ext.hp.com/pub/caps-softpaq/cmit/HPIA.html), extract it to %ProgramFiles%\HP\HPIA\bin, and re-run. Do not run a copy from a folder other users can change.' -Actions @()))
+    }
     elseif ($hp -and $isHp) {
         # Only when the search actually ran (HPIA = $null means it was skipped, which proves nothing).
+        $searched = 'No HPImageAssistant.exe in the searched locations.'
+        if ($null -ne $hp.PSObject.Properties['HPIAPathGiven']) {
+            $searched = if ($hp.HPIAPathGiven) { 'No HPImageAssistant.exe at the -HPIAPath given.' } else { 'No HPImageAssistant.exe in %ProgramFiles%\HP\HPIA\bin.' }
+        }
         $findings.Add((New-DDFinding -Id 'HPIA-MISSING' -Severity 'Info' -Category 'Updates' -Title 'HP Image Assistant not found' `
-                    -Evidence @('No HPImageAssistant.exe in the searched locations.') -Interpretation 'Without it, this tool cannot compare against HP''s certified driver set for your model.' `
-                    -Confidence 'VERIFIED' -Recommendation 'Download HP Image Assistant from HP (https://ftp.ext.hp.com/pub/caps-softpaq/cmit/HPIA.html), extract to C:\HPIA, and re-run.' -Actions @()))
+                    -Evidence @($searched) -Interpretation 'Without it, this tool cannot compare against HP''s certified driver set for your model.' `
+                    -Confidence 'VERIFIED' -Recommendation 'Download HP Image Assistant from HP (https://ftp.ext.hp.com/pub/caps-softpaq/cmit/HPIA.html), extract it to %ProgramFiles%\HP\HPIA\bin (only administrators can change that folder), and re-run.' -Actions @()))
     }
 
     # 13. Driver store context for displays ------------------------------------

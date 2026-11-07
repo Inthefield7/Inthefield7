@@ -79,6 +79,28 @@ Test-That 'Bonjour recommendation keeps LSA protection on' { $bon.Recommendation
 $tl = @($a.Findings | Where-Object { $_.Category -eq 'Timeline' })
 Test-That 'timeline links 411 + 442 in the same window as OS migration' { @($tl | Where-Object { $_.Interpretation -match 'Windows upgrade or reinstall' }).Count -eq 1 }
 Test-That 'HPIA skipped -> no false "not found" claim' { $null -eq (Find-F $a 'HPIA-MISSING') }
+# SEC-001: HPIA runs elevated, so the publisher check must be exact and a refused copy must be reported.
+Test-That 'HP publisher: real HP Inc. signer subject accepted' { Test-DDHPPublisher 'CN=HP Inc., OU=HP Cybersecurity, O=HP Inc., L=Palo Alto, S=California, C=US' }
+Test-That 'HP publisher: O=HP Inc. inside a quoted CN refused' { -not (Test-DDHPPublisher 'CN="Evil Ltd, O=HP Inc., x", O=Evil Ltd, C=US') }
+Test-That 'HP publisher: organization "HP Inc, Evil" refused' { -not (Test-DDHPPublisher 'CN=x, O="HP Inc, Evil"') }
+Test-That 'HP publisher: line break inside a CN cannot forge an O= line' { -not (Test-DDHPPublisher ('CN="x' + "`n" + 'O=HP Inc.", C=US')) }
+Test-That 'HP publisher: Microsoft, empty and unparsable subjects refused' { -not (Test-DDHPPublisher 'CN=Microsoft Windows, O=Microsoft Corporation, C=US') -and -not (Test-DDHPPublisher '') -and -not (Test-DDHPPublisher 'not a DN ===') }
+Test-That 'under-folder: only paths inside Program Files pass' {
+    $pf = @('C:\Program Files', 'C:\Program Files (x86)')
+    (Test-DDUnderFolder 'C:\Program Files\HP\HPIA\bin\HPImageAssistant.exe' $pf) -and (Test-DDUnderFolder 'c:\program files (x86)\HP\x.exe' $pf) -and
+    -not (Test-DDUnderFolder 'C:\SWSetup\SP1\HPImageAssistant.exe' $pf) -and -not (Test-DDUnderFolder 'C:\HPIA\HPImageAssistant.exe' $pf) -and
+    -not (Test-DDUnderFolder 'C:\Program Files\..\HPIA\HPImageAssistant.exe' $pf) -and -not (Test-DDUnderFolder 'C:\Program FilesX\HPImageAssistant.exe' $pf)
+}
+$s = Get-Base; $s.HPIA = [pscustomobject]@{ Present = $false; HPIAPathGiven = $true; Rejected = @('C:\SWSetup\SP1\HPImageAssistant.exe - not under Program Files, so other users may be able to change it'); Recommendations = @() }
+$hr = Invoke-DDAnalysis -Snapshot $s
+Test-That 'HPIA copy refused -> HPIA-REJECTED with the reason, no "not found" claim' { $f = Find-F $hr 'HPIA-REJECTED'; $f -and (($f.Evidence -join ' ') -match 'SWSetup.*not under Program Files') -and $null -eq (Find-F $hr 'HPIA-MISSING') }
+Test-That 'HPIA copy refused -> report says refused, not "not installed"' { $h = ConvertTo-DDHtmlReport -Snapshot $s -Analysis $hr -Plan @() -RepairResults @() -Comparison $null -Mode 'Diagnose'; $h -match 'HP Image Assistant: found but refused' -and $h -notmatch 'HP Image Assistant: not installed' }
+$s = Get-Base; $s.HPIA = [pscustomobject]@{ Present = $false; HPIAPathGiven = $false; Rejected = @(); Recommendations = @() }
+Test-That 'HPIA absent, no -HPIAPath -> evidence names only Program Files' { $e = (Find-F (Invoke-DDAnalysis -Snapshot $s) 'HPIA-MISSING').Evidence -join ' '; $e -match 'ProgramFiles' -and $e -notmatch 'HPIAPath' }
+$s = Get-Base; $s.HPIA = [pscustomobject]@{ Present = $false; HPIAPathGiven = $true; Rejected = @(); Recommendations = @() }
+Test-That 'HPIA absent at -HPIAPath -> evidence names only -HPIAPath (default not searched)' { $e = (Find-F (Invoke-DDAnalysis -Snapshot $s) 'HPIA-MISSING').Evidence -join ' '; $e -match 'HPIAPath' -and $e -notmatch 'ProgramFiles' }
+$s = Get-Base; $s.HPIA = [pscustomobject]@{ Present = $false; Recommendations = @() }
+Test-That 'older snapshot without HPIAPathGiven -> generic searched-locations evidence' { ((Find-F (Invoke-DDAnalysis -Snapshot $s) 'HPIA-MISSING').Evidence -join ' ') -eq 'No HPImageAssistant.exe in the searched locations.' }
 $plan = @(Get-DDRepairPlan -Findings $a.Findings)
 Test-That 'plan: RestartDevice before ScanDevices before RestartComputer' {
     $types = @($plan | ForEach-Object { $_.Type })
