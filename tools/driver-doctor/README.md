@@ -65,7 +65,7 @@ It writes `DisplayChange-<timestamp>.txt`: elevated, into a new `%ProgramData%\D
 | Switch the layout to **Extend** (same as Win+P) | Switch to "PC screen only", which could blank your only working screen |
 | Raise panel brightness if it is 0% | Turn off LSA protection, Memory integrity or any security feature |
 | Install Windows Update drivers you confirm one by one | Flash BIOS/firmware unless you pass `-IncludeFirmware`. Even then it requires AC power, battery at 50% or more, and a BitLocker key warning. |
-| HP Image Assistant driver install (HP's own tool) | Restart the PC unless you pass `-AllowRestart` and confirm |
+| HP Image Assistant driver install (HP's own tool) | Restart the PC unless you pass `-AllowRestart` and confirm. A restart that would apply a staged BIOS/firmware capsule is itself a firmware install: it also needs `-IncludeFirmware` and must pass the same AC/battery gate first |
 
 After the repair it collects again and diffs the **state-based** findings. History, such as old event-log entries, is never counted as "fixed". If anything new appears, it prints the rollback paths: Roll Back Driver, the exported package, or System Restore.
 
@@ -80,7 +80,7 @@ If the screen stays black after a GPU restart: wait 30 seconds, then hold the po
 -SkipHPIA               skip HP Image Assistant
 -HPIAPath <path>        folder or exe of HP Image Assistant; must be under Program Files (others are refused)
 -IncludeFirmware        allow BIOS/firmware installs in Repair (AC + >= 50% battery)
--AllowRestart           allow Repair to schedule a restart (still asks)
+-AllowRestart           allow Repair to schedule a restart (still asks; a restart that applies staged firmware also needs -IncludeFirmware and AC power)
 -WhatIf                 show the plan, change nothing
 -SnapshotPath <json>    re-analyze a saved snapshot offline (any OS, PowerShell 7)
 -OutputPath <dir>       report folder

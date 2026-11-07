@@ -101,12 +101,20 @@ $s = Get-Base; $s.HPIA = [pscustomobject]@{ Present = $false; HPIAPathGiven = $t
 Test-That 'HPIA absent at -HPIAPath -> evidence names only -HPIAPath (default not searched)' { $e = (Find-F (Invoke-DDAnalysis -Snapshot $s) 'HPIA-MISSING').Evidence -join ' '; $e -match 'HPIAPath' -and $e -notmatch 'ProgramFiles' }
 $s = Get-Base; $s.HPIA = [pscustomobject]@{ Present = $false; Recommendations = @() }
 Test-That 'older snapshot without HPIAPathGiven -> generic searched-locations evidence' { ((Find-F (Invoke-DDAnalysis -Snapshot $s) 'HPIA-MISSING').Evidence -join ' ') -eq 'No HPImageAssistant.exe in the searched locations.' }
-$plan = @(Get-DDRepairPlan -Findings $a.Findings)
+# NEW-5: this fixture has a staged UEFI capsule (code-14 UEFI\RES_ device), so every restart would flash
+# firmware. Without -IncludeFirmware the restart is held back as a Manual note; with it the restart is
+# planned once and flagged firmware so the executor runs the power gate.
+$planHeld = @(Get-DDRepairPlan -Findings $a.Findings)
+Test-That 'plan: with a staged capsule, no restart is planned without -IncludeFirmware (held back)' {
+    @($planHeld | Where-Object { $_.Type -eq 'RestartComputer' }).Count -eq 0 -and
+    @($planHeld | Where-Object { $_.Type -eq 'Manual' -and $_.Target -eq 'firmware' -and $_.Detail -match 'IncludeFirmware' }).Count -eq 1
+}
+$plan = @(Get-DDRepairPlan -Findings $a.Findings -IncludeFirmware)
 Test-That 'plan: RestartDevice before ScanDevices before RestartComputer' {
     $types = @($plan | ForEach-Object { $_.Type })
     $types.IndexOf('RestartDevice') -lt $types.IndexOf('ScanDevices') -and $types.IndexOf('ScanDevices') -lt $types.IndexOf('RestartComputer')
 }
-Test-That 'plan: RestartComputer appears once (deduplicated)' { @($plan | Where-Object { $_.Type -eq 'RestartComputer' }).Count -eq 1 }
+Test-That 'plan: RestartComputer appears once (deduplicated) and is flagged firmware' { $rc = @($plan | Where-Object { $_.Type -eq 'RestartComputer' }); $rc.Count -eq 1 -and $rc[0].RequiresFirmwareConsent -eq $true }
 Test-That 'plan: never contains uninstall/disable/delete actions' { @($plan | Where-Object { $_.Type -match 'Uninstall|Disable|Delete|Remove' }).Count -eq 0 }
 
 Write-Host 'Scenario B: healthy' -ForegroundColor Cyan
@@ -309,6 +317,117 @@ if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
         Remove-Item -LiteralPath $sroot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+
+Write-Host 'Scenario S6: NEW-5 a restart that flashes staged firmware is power-gated' -ForegroundColor Cyan
+# Analysis marks restart actions firmware when a capsule would flash on the next restart.
+# The base fixture has a code-14 UEFI capsule device (UEFI\RES_{F9A422C9...}), so a staged capsule is present.
+$s6base = Invoke-DDAnalysis -Snapshot (Get-Base)
+$s6devFw = Find-F $s6base "DEVICE:$fwId"
+Test-That 'NEW-5: a staged code-14 firmware (UEFI capsule) device restart is marked firmware' {
+    $r = @($s6devFw.Actions | Where-Object { $_.Type -eq 'RestartComputer' })[0]
+    $null -ne $r -and $r.RequiresFirmwareConsent -eq $true
+}
+# A firmware resource with a transient (retry-on-restart) status produces a retry-restart; it is firmware.
+$s6retry = Get-Base
+$s6retry.Firmware = @([pscustomobject]@{ Guid = '{abcdabcd-0000-0000-0000-000000000abc}'; Version = 1; LastAttemptVersion = 2; LastAttemptStatus = -1073741101 })
+$s6ra = Invoke-DDAnalysis -Snapshot $s6retry
+$s6fwFinding = Find-FLike $s6ra 'FIRMWARE:*'
+Test-That 'NEW-5: the staged-firmware retry restart is marked firmware' {
+    $r = @($s6fwFinding.Actions | Where-Object { $_.Type -eq 'RestartComputer' })[0]
+    $null -ne $r -and $r.RequiresFirmwareConsent -eq $true
+}
+# With no capsule staged, a plain code-14 restart is NOT firmware (firmware-staged is a per-snapshot flag).
+$s6clean = Get-Base
+$s6clean.Firmware = @()
+$s6clean.Devices = @($s6clean.Devices | Where-Object { ([string]$_.InstanceId) -notlike 'UEFI\RES_*' }) +
+@([pscustomobject]@{ Present = $true; ProblemCode = 14; ProblemStatus = 0; InstanceId = 'SWD\TESTDEV\0001'; Name = 'Test device'; HardwareIds = @(); Class = 'System'; ClassGuid = ''; DriverInf = 'oem99.inf'; DriverVersion = '1.0'; DriverProvider = 'Test' })
+$s6ca = Invoke-DDAnalysis -Snapshot $s6clean
+$s6devPlain = Find-F $s6ca 'DEVICE:SWD\TESTDEV\0001'
+Test-That 'NEW-5: a non-firmware code-14 restart is not marked firmware when no capsule is staged' {
+    $r = @($s6devPlain.Actions | Where-Object { $_.Type -eq 'RestartComputer' })[0]
+    $null -ne $r -and $r.RequiresFirmwareConsent -eq $false
+}
+# Plan: a firmware restart is held back without -IncludeFirmware, and flagged firmware with it.
+$s6fwR = New-DDFinding -Id 'T-FW' -Severity 'Medium' -Category 'Firmware' -Title 't' -Evidence @('e') -Interpretation 'i' -Confidence 'VERIFIED' -Recommendation 'r' -Actions @(New-DDAction 'RestartComputer' '' 'Full restart to retry the staged firmware update.' $true) -StateBased $true
+$s6plR = New-DDFinding -Id 'T-PLAIN' -Severity 'Medium' -Category 'Restart' -Title 't' -Evidence @('e') -Interpretation 'i' -Confidence 'VERIFIED' -Recommendation 'r' -Actions @(New-DDAction 'RestartComputer' '' 'Full restart.' $false) -StateBased $true
+Test-That 'NEW-5: a firmware restart is held back from the plan without -IncludeFirmware' { @(Get-DDRepairPlan -Findings @($s6fwR) | Where-Object { $_.Type -eq 'RestartComputer' }).Count -eq 0 }
+Test-That 'NEW-5: with -IncludeFirmware the restart is planned and the item is flagged firmware' { $it = @(Get-DDRepairPlan -Findings @($s6fwR) -IncludeFirmware | Where-Object { $_.Type -eq 'RestartComputer' }); $it.Count -eq 1 -and $it[0].RequiresFirmwareConsent -eq $true }
+Test-That 'NEW-5: a non-firmware restart is planned without -IncludeFirmware and is not flagged firmware' { $it = @(Get-DDRepairPlan -Findings @($s6plR) | Where-Object { $_.Type -eq 'RestartComputer' }); $it.Count -eq 1 -and $it[0].RequiresFirmwareConsent -eq $false }
+# A capsule staged only as a retry-pending firmware resource (no code-14 UEFI device) still makes every restart firmware.
+$s6tr = Get-Base
+$s6tr.Firmware = @([pscustomobject]@{ Guid = '{abcdabcd-0000-0000-0000-000000000abc}'; Version = 1; LastAttemptVersion = 2; LastAttemptStatus = -1073741101 })
+$s6tr.Devices = @($s6tr.Devices | Where-Object { ([string]$_.InstanceId) -notlike 'UEFI\RES_*' }) +
+@([pscustomobject]@{ Present = $true; ProblemCode = 14; ProblemStatus = 0; InstanceId = 'SWD\TESTDEV\0002'; Name = 'Test device'; HardwareIds = @(); Class = 'System'; ClassGuid = ''; DriverInf = 'oem98.inf'; DriverVersion = '1.0'; DriverProvider = 'Test' })
+$s6ta = Invoke-DDAnalysis -Snapshot $s6tr
+Test-That 'NEW-5: with only a retry-pending firmware resource staged, an unrelated code-14 restart is firmware too' {
+    $r = @((Find-F $s6ta 'DEVICE:SWD\TESTDEV\0002').Actions | Where-Object { $_.Type -eq 'RestartComputer' })[0]
+    $null -ne $r -and $r.RequiresFirmwareConsent -eq $true
+}
+# The pending-restart finding's restart follows the same flag: firmware while a capsule is staged, plain otherwise.
+$s6pr = Get-Base
+$s6pr.PendingRestart = [pscustomobject]@{ ComponentServicing = $true; WindowsUpdate = $false; FileRename = $false; FastStartup = $false }
+$s6pa = Invoke-DDAnalysis -Snapshot $s6pr
+Test-That 'NEW-5: the pending-restart action is firmware while a capsule is staged' {
+    $r = @((Find-F $s6pa 'PENDING-RESTART').Actions | Where-Object { $_.Type -eq 'RestartComputer' })[0]
+    $null -ne $r -and $r.RequiresFirmwareConsent -eq $true
+}
+$s6prc = Get-Base
+$s6prc.Firmware = @()
+$s6prc.Devices = @($s6prc.Devices | Where-Object { ([string]$_.InstanceId) -notlike 'UEFI\RES_*' })
+$s6prc.PendingRestart = [pscustomobject]@{ ComponentServicing = $true; WindowsUpdate = $false; FileRename = $false; FastStartup = $false }
+$s6pca = Invoke-DDAnalysis -Snapshot $s6prc
+Test-That 'NEW-5: the pending-restart action is not firmware when no capsule is staged' {
+    $r = @((Find-F $s6pca 'PENDING-RESTART').Actions | Where-Object { $_.Type -eq 'RestartComputer' })[0]
+    $null -ne $r -and $r.RequiresFirmwareConsent -eq $false
+}
+# Merged restart items: a plain restart planned first must still end up flagged when a firmware restart joins it.
+$s6plHigh = New-DDFinding -Id 'T-PLAIN-HIGH' -Severity 'High' -Category 'Restart' -Title 't' -Evidence @('e') -Interpretation 'i' -Confidence 'VERIFIED' -Recommendation 'r' -Actions @(New-DDAction 'RestartComputer' '' 'Full restart.' $false) -StateBased $true
+Test-That 'NEW-5: merged restart items keep the firmware flag when a later firmware restart joins a plain one' {
+    $it = @(Get-DDRepairPlan -Findings @($s6plHigh, $s6fwR) -IncludeFirmware | Where-Object { $_.Type -eq 'RestartComputer' })
+    $it.Count -eq 1 -and $it[0].RequiresFirmwareConsent -eq $true -and @($it[0].Reasons).Count -eq 2
+}
+# The executor's decision is a pure helper, so DriverDoctor.ps1 only passes its result through.
+Test-That 'NEW-5: Test-DDPlanNeedsFirmwareRestart is true only when a planned restart is flagged firmware' {
+    (Test-DDPlanNeedsFirmwareRestart -Plan @(Get-DDRepairPlan -Findings @($s6fwR) -IncludeFirmware)) -and
+    -not (Test-DDPlanNeedsFirmwareRestart -Plan @(Get-DDRepairPlan -Findings @($s6plR))) -and
+    -not (Test-DDPlanNeedsFirmwareRestart -Plan @()) -and
+    -not (Test-DDPlanNeedsFirmwareRestart -Plan @(Get-DDRepairPlan -Findings @($s6fwR)))
+}
+# Executor: Invoke-DDRestartComputer runs Test-DDFirmwareSafe before shutdown /r only for a firmware restart.
+. (Join-Path $root 'lib\DD.Repair.ps1')
+$s6saved = @{}
+foreach ($n in 'Test-DDFirmwareSafe', 'Invoke-DDNative', 'Write-DDBitLockerWarning') { $s6saved[$n] = (Get-Item "function:$n").ScriptBlock }
+try {
+    $script:nativeCalls = New-Object System.Collections.Generic.List[string]
+    $script:gateCalls = 0
+    function Invoke-DDNative { $script:nativeCalls.Add((@($args[1]) -join ' ')); [pscustomobject]@{ ExitCode = 0; Output = 'stub' } }
+    function Write-DDBitLockerWarning { }
+    $s6act = New-DDAction 'RestartComputer' '' 'Full restart'
+    function Test-DDFirmwareSafe { $script:gateCalls++; return @($false, 'stub: on battery') }
+    $script:gateCalls = 0; $script:nativeCalls.Clear()
+    $s6g1 = Invoke-DDRestartComputer -Action $s6act -AllowRestart -Firmware -Confirm:$false
+    Test-That 'NEW-5: a firmware restart is refused by the power gate; no shutdown is scheduled' {
+        $s6g1.Result -eq 'Skipped' -and $s6g1.Detail -match 'Firmware safety gate: stub' -and $script:gateCalls -eq 1 -and $script:nativeCalls.Count -eq 0
+    }
+    function Test-DDFirmwareSafe { $script:gateCalls++; return @($true, 'ok') }
+    $script:gateCalls = 0; $script:nativeCalls.Clear()
+    $s6g2 = Invoke-DDRestartComputer -Action $s6act -AllowRestart -Firmware -Confirm:$false
+    Test-That 'NEW-5: a firmware restart that passes the gate schedules shutdown /r' {
+        $s6g2.Result -eq 'Scheduled' -and $script:gateCalls -eq 1 -and @($script:nativeCalls | Where-Object { $_ -match '^/r ' }).Count -eq 1
+    }
+    function Test-DDFirmwareSafe { $script:gateCalls++; return @($false, 'should not be called') }
+    $script:gateCalls = 0; $script:nativeCalls.Clear()
+    $s6g3 = Invoke-DDRestartComputer -Action $s6act -AllowRestart -Confirm:$false
+    Test-That 'NEW-5: a non-firmware restart skips the gate and schedules shutdown /r' {
+        $s6g3.Result -eq 'Scheduled' -and $script:gateCalls -eq 0 -and @($script:nativeCalls | Where-Object { $_ -match '^/r ' }).Count -eq 1
+    }
+    $script:gateCalls = 0; $script:nativeCalls.Clear()
+    $s6g4 = Invoke-DDRestartComputer -Action $s6act -Firmware
+    Test-That 'NEW-5: a firmware restart without -AllowRestart is only advised; the gate and shutdown never run' {
+        $s6g4.Result -eq 'Advised' -and $script:gateCalls -eq 0 -and $script:nativeCalls.Count -eq 0
+    }
+}
+finally { foreach ($n in $s6saved.Keys) { Set-Item "function:$n" $s6saved[$n] } }
 
 function Invoke-DDOffline {
     # Runs DriverDoctor.ps1 on the screenshot snapshot in a child process. Not elevated: -OutputPath

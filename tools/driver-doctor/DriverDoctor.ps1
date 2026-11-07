@@ -139,8 +139,10 @@ try {
             }
         }
         if (@($plan | Where-Object { $_.Type -eq 'RestartComputer' }).Count -gt 0) {
+            # NEW-5: a restart that would flash a staged firmware capsule is gated on AC power first
+            # (the decision is Test-DDPlanNeedsFirmwareRestart in DD.Analysis.ps1, pure and tested).
             $rAction = [pscustomobject]@{ Type = 'RestartComputer'; Target = ''; Detail = 'Full restart' }
-            $repairResults += Invoke-DDRestartComputer -Action $rAction -AllowRestart:$AllowRestart
+            $repairResults += Invoke-DDRestartComputer -Action $rAction -AllowRestart:$AllowRestart -Firmware:(Test-DDPlanNeedsFirmwareRestart -Plan $plan)
         }
     }
     elseif (@($plan).Count -gt 0) {

@@ -220,8 +220,15 @@ function Invoke-DDHPIAInstall {
 
 function Invoke-DDRestartComputer {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
-    param($Action, [switch]$AllowRestart)
+    param($Action, [switch]$AllowRestart, [switch]$Firmware)
     if (-not $AllowRestart) { return (New-DDResult $Action 'Advised' 'Restart yourself: plug in AC power, then Start > Power > Restart (not Shut down).') }
+    # NEW-5: a restart that lets a staged firmware capsule flash is a firmware install. Gate it on AC
+    # power and battery the same way HPIA/Windows Update firmware is gated, before scheduling shutdown /r.
+    if ($Firmware) {
+        $gate = Test-DDFirmwareSafe
+        if (-not $gate[0]) { return (New-DDResult $Action 'Skipped' "Firmware safety gate: $($gate[1])") }
+        Write-DDBitLockerWarning
+    }
     if (-not $PSCmdlet.ShouldProcess('This computer', 'Full restart in 60 seconds (cancel: shutdown /a)')) { return (New-DDResult $Action 'Declined' '') }
     $r = Invoke-DDNative 'shutdown.exe' @('/r', '/t', '60', '/c', 'Driver Doctor: restarting to finish driver/firmware updates. Cancel with: shutdown /a')
     return (New-DDResult $Action $(if ($r.ExitCode -eq 0) { 'Scheduled' } else { 'Failed' }) $r.Output)

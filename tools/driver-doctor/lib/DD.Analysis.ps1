@@ -792,6 +792,24 @@ function Invoke-DDAnalysis {
     $findings.Add((New-DDFinding -Id 'INTERNAL-PANEL' -Severity $verdict.Severity -Category 'Display' -Title "Built-in display: $($verdict.State)" `
                 -Evidence $verdict.Evidence -Interpretation $verdict.Summary -Confidence $verdict.Confidence -Recommendation $verdict.NextStep -Actions $vActions -StateBased $true))
 
+    # NEW-5: a staged UEFI firmware capsule flashes on the NEXT full restart, so once one is staged
+    # every restart this tool schedules is a firmware install and must pass the same power gate. The
+    # capsule is staged when a present firmware (UEFI\RES_) device needs a restart (code 14), or a
+    # firmware resource reports a transient (retry-on-restart) last-attempt status. Each RestartComputer
+    # action below is marked with this flag; Get-DDRepairPlan then holds it back without -IncludeFirmware,
+    # and Invoke-DDRestartComputer runs Test-DDFirmwareSafe before shutdown /r.
+    $firmwareStaged = $false
+    foreach ($fd in $devices) {
+        if ($fd.Present -eq $false) { continue }
+        if ((ConvertTo-DDInt $fd.ProblemCode) -eq 14 -and (Get-DDFirmwareGuidFromInstance $fd.InstanceId)) { $firmwareStaged = $true; break }
+    }
+    if (-not $firmwareStaged) {
+        foreach ($ff in (Get-DDArray $Snapshot.Firmware)) {
+            $ffi = Get-DDFirmwareAttemptInfo $ff.LastAttemptStatus
+            if ($ffi -and $ffi.Value -ne 0 -and $ffi.Transient) { $firmwareStaged = $true; break }
+        }
+    }
+
     # 3. Other devices with Device Manager problems --------------------------
     $gpuIds = @($gpuHealth | ForEach-Object { [string]$_.Device.InstanceId })
     foreach ($d in $devices) {
@@ -808,7 +826,7 @@ function Invoke-DDAnalysis {
             'RestartDevice' { $actions = @((New-DDAction 'RestartDevice' $d.InstanceId 'Restart this device.')) + @(Get-DDDriverUpdateActions $Snapshot $d) }
             'ScanDevices' { $actions = @(Get-DDDriverUpdateActions $Snapshot $d) }
             'DriverUpdate' { $actions = @(Get-DDDriverUpdateActions $Snapshot $d) }
-            'RestartComputer' { $actions = @(New-DDAction 'RestartComputer' '' 'Full restart (Start > Power > Restart, not Shut down).') }
+            'RestartComputer' { $actions = @(New-DDAction 'RestartComputer' '' 'Full restart (Start > Power > Restart, not Shut down).' $firmwareStaged) }
             'EnableDevice' {
                 if ((Test-DDClass $d 'Monitor') -or (Test-DDClass $d 'Display')) { $actions = @(New-DDAction 'EnableDevice' $d.InstanceId 'Re-enable this display device.') }
                 else { $sev = 'Info'; $interp = 'Disabled devices are often disabled on purpose; left as is.' }
@@ -878,7 +896,7 @@ function Invoke-DDAnalysis {
         $dev = $devices | Where-Object { (Get-DDFirmwareGuidFromInstance $_.InstanceId) -eq $guid } | Select-Object -First 1
         $sev = if ($fi.Transient) { 'Medium' } else { 'High' }
         $actions = if ($fi.Transient) {
-            @((New-DDAction 'Manual' '' 'Connect the AC adapter, charge the battery well, then do a full Restart and let the update finish.'), (New-DDAction 'RestartComputer' '' 'Full restart to retry the staged firmware update.'))
+            @((New-DDAction 'Manual' '' 'Connect the AC adapter, charge the battery well, then do a full Restart and let the update finish.'), (New-DDAction 'RestartComputer' '' 'Full restart to retry the staged firmware update.' $true))
         }
         else {
             @((New-DDAction 'HPIAInstall' 'Firmware' 'Install the HP BIOS/firmware package for this model through HP Image Assistant.' $true), (New-DDAction 'Manual' '' 'Windows will not retry this firmware automatically. Get the BIOS/firmware SoftPaq from HP support for this model.'))
@@ -903,7 +921,7 @@ function Invoke-DDAnalysis {
             if ($pr.FastStartup) { $ev += 'Fast Startup is ON: "Shut down" then power on does NOT finish pending updates. Use Restart.' }
             $findings.Add((New-DDFinding -Id 'PENDING-RESTART' -Severity 'Medium' -Category 'Restart' -Title 'Windows is waiting for a full restart' -Evidence $ev `
                         -Interpretation 'Staged driver/firmware/OS changes are waiting. Diagnosing further before restarting can chase problems that a restart resolves.' `
-                        -Confidence 'VERIFIED' -Recommendation 'Plug in AC power, then Start > Power > Restart.' -Actions @(New-DDAction 'RestartComputer' '' 'Full restart.') -StateBased $true))
+                        -Confidence 'VERIFIED' -Recommendation 'Plug in AC power, then Start > Power > Restart.' -Actions @(New-DDAction 'RestartComputer' '' 'Full restart.' $firmwareStaged) -StateBased $true))
         }
     }
 
@@ -1091,9 +1109,12 @@ function Get-DDRepairPlan {
                 $type = 'Manual'; $target = 'firmware'
                 $detail = 'Firmware/BIOS updates are held back. Re-run Repair with -IncludeFirmware (on AC power) to allow them.'
             }
+            # NEW-5: carry the firmware flag onto the plan item (OR it across merged actions) so the
+            # restart executor can gate a firmware-flashing restart on AC power.
+            $fwConsent = [bool]$a.RequiresFirmwareConsent
             $key = "$type|$target|$(if ($type -eq 'Manual') { $detail })"
-            if ($index.ContainsKey($key)) { $index[$key].Reasons += $f.Id; continue }
-            $item = [pscustomobject]@{ Order = $order[$type]; Type = $type; Target = $target; Detail = $detail; Reasons = @($f.Id); Severity = $f.Severity }
+            if ($index.ContainsKey($key)) { $index[$key].Reasons += $f.Id; if ($fwConsent) { $index[$key].RequiresFirmwareConsent = $true }; continue }
+            $item = [pscustomobject]@{ Order = $order[$type]; Type = $type; Target = $target; Detail = $detail; Reasons = @($f.Id); Severity = $f.Severity; RequiresFirmwareConsent = $fwConsent }
             $index[$key] = $item
             $plan.Add($item)
         }
@@ -1103,6 +1124,13 @@ function Get-DDRepairPlan {
         if ($h) { $h.Target = 'Drivers,BIOS,Firmware' }
     }
     return @($plan | Sort-Object Order, @{ Expression = { $script:DDSeverityRank[$_.Severity] } })
+}
+
+function Test-DDPlanNeedsFirmwareRestart {
+    # NEW-5: true when the plan's restart would let a staged firmware capsule flash, so the restart
+    # executor must pass the firmware power gate first. Pure: it reads the plan items only.
+    param([object[]]$Plan)
+    return (@(Get-DDArray $Plan | Where-Object { $_.Type -eq 'RestartComputer' -and $_.RequiresFirmwareConsent }).Count -gt 0)
 }
 
 function Compare-DDFindings {
