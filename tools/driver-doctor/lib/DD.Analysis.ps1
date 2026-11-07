@@ -510,7 +510,13 @@ function Get-DDInternalDisplayVerdict {
     $targets = @(Get-DDArray $Snapshot.DisplayTargets)
     $internal = @($targets | Where-Object { Test-DDInternalOutputTechnology $_.OutputTechnology })
     $monitors = @(Get-DDArray $Snapshot.Devices | Where-Object { Test-DDClass $_ 'Monitor' })
+    # Two different 442 facts. Every 442 for ANY new monitor names the panel's old instance as
+    # "Last Device Instance ID" with present=false, so:
+    #  - $migrations (matched on LastInstanceId) only feeds the GPU same-boot link below, which
+    #    cites that field explicitly;
+    #  - $panelMigrations (matched on the event's own device) are the only 442s listed as panel events.
     $migrations = @(Get-DDArray $Snapshot.PnpEvents | Where-Object { $_.Id -eq 442 -and $_.LastInstanceId -and (Test-DDLikelyPanelInstance $_.LastInstanceId) })
+    $panelMigrations = @(Get-DDArray $Snapshot.PnpEvents | Where-Object { $_.Id -eq 442 -and $_.DeviceInstanceId -and (Test-DDLikelyPanelInstance $_.DeviceInstanceId) })
     $evidence = New-Object System.Collections.Generic.List[string]
 
     $internalIds = @($internal | ForEach-Object { ConvertFrom-DDMonitorDevicePath $_.DevicePath } | Where-Object { $_ })
@@ -524,7 +530,7 @@ function Get-DDInternalDisplayVerdict {
     foreach ($p in $panelDevices) {
         $evidence.Add("Monitor device $($p.InstanceId) '$($p.Name)': present=$($p.Present), problem code=$(ConvertTo-DDInt $p.ProblemCode).")
     }
-    foreach ($m in $migrations) {
+    foreach ($m in $panelMigrations) {
         $evidence.Add("Event 442 at $(Format-DDDate $m.Time): settings for $($m.DeviceInstanceId) were not migrated; last instance $($m.LastInstanceId) present=$($m.Present).")
     }
 
@@ -546,7 +552,7 @@ function Get-DDInternalDisplayVerdict {
             foreach ($mg in $migrations) {
                 $mt = ConvertTo-DDDate $mg.Time
                 if ($ft -and $mt -and [math]::Abs(($ft - $mt).TotalMinutes) -le 10) {
-                    $linked += "Connection: GPU start failure at $(Format-DDDate $ft) ($(Format-DDStatusText $f.ProblemStatus)) and panel $($mg.LastInstanceId) reported not present at $(Format-DDDate $mt) - same boot."
+                    $linked += "Connection: GPU start failure at $(Format-DDDate $ft) ($(Format-DDStatusText $f.ProblemStatus)) and panel $($mg.LastInstanceId) reported not present at $(Format-DDDate $mt) (event 442 for $($mg.DeviceInstanceId), last instance field) - same boot."
                 }
             }
         }

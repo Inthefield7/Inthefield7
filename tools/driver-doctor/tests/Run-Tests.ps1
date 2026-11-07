@@ -197,6 +197,13 @@ Test-That 'live: no Critical finding and no High finding about the GPU or displa
 Test-That 'live: plan touches neither the display nor the GPU' { @($lplan | Where-Object { $_.Type -in 'ExtendTopology', 'EnableDevice', 'SetBrightness' -or "$($_.Target)" -match 'DEV_7D45|DISPLAY\\' }).Count -eq 0 }
 Test-That 'live: plan never uninstalls, disables or deletes' { @($lplan | Where-Object { $_.Type -match 'Uninstall|Disable|Delete|Remove' }).Count -eq 0 }
 Test-That 'live: un-applied firmware capsule still reported (working panel hides nothing)' { @($la.Findings | Where-Object { $_.Category -eq 'Firmware' -and $_.Severity -eq 'High' -and $_.Title -match 'F9A422C9' }).Count -eq 1 }
+# Regression: the live log has 14 442s naming the panel as "last instance"; only 2 are ABOUT the panel.
+Test-That 'live: verdict lists only 442s whose own device is the panel' {
+    $l442 = @($la.Verdict.Evidence | Where-Object { $_ -like 'Event 442 at *' })
+    $l442.Count -eq 2 -and @($l442 | Where-Object { $_ -notmatch '^Event 442 at \S+ \S+: settings for DISPLAY\\CMN163B\\' }).Count -eq 0 -and
+    (($l442 -join "`n") -match '2026-08-29 13:57:54') -and (($la.Verdict.Evidence -join "`n") -notmatch 'settings for DISPLAY\\(DELD081|VIZ0301|ACR0EAB|MS_0001|Default_Monitor)')
+}
+Test-That 'live: GPU same-boot link still cites the 442 it relies on, by its own device' { ($la.Verdict.Evidence -join "`n") -match 'Connection: GPU start failure at 2026-08-26 19:49:44 .*event 442 for DISPLAY\\Default_Monitor\\1&8713bca&0&UID0, last instance field' }
 
 Write-Host 'Display change diagnostic' -ForegroundColor Cyan
 . (Join-Path $root 'diagnostics\Get-DisplayChange.ps1')
