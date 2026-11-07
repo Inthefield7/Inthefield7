@@ -223,9 +223,10 @@ Test-That '219: a device with fewer events gets its own count, not a shared one'
 Test-That 'live: verdict lists only 442s whose own device is the panel' {
     $l442 = @($la.Verdict.Evidence | Where-Object { $_ -like 'Event 442 at *' })
     $l442.Count -eq 2 -and @($l442 | Where-Object { $_ -notmatch '^Event 442 at \S+ \S+: settings for DISPLAY\\CMN163B\\' }).Count -eq 0 -and
-    (($l442 -join "`n") -match '2026-08-29 13:57:54') -and (($la.Verdict.Evidence -join "`n") -notmatch 'settings for DISPLAY\\(DELD081|VIZ0301|ACR0EAB|MS_0001|Default_Monitor)')
+    (($l442 -join "`n") -match [regex]::Escape((Format-DDDate '2026-08-29T18:57:54Z'))) -and (($la.Verdict.Evidence -join "`n") -notmatch 'settings for DISPLAY\\(DELD081|VIZ0301|ACR0EAB|MS_0001|Default_Monitor)')
 }
-Test-That 'live: GPU same-boot link still cites the 442 it relies on, by its own device' { ($la.Verdict.Evidence -join "`n") -match 'Connection: GPU start failure at 2026-08-26 19:49:44 .*event 442 for DISPLAY\\Default_Monitor\\1&8713bca&0&UID0, last instance field' }
+# Fixture times are UTC and the report prints local time, so expected times go through Format-DDDate too.
+Test-That 'live: GPU same-boot link still cites the 442 it relies on, by its own device' { ($la.Verdict.Evidence -join "`n") -match ('Connection: GPU start failure at ' + [regex]::Escape((Format-DDDate '2026-08-27T00:49:44Z')) + ' .*event 442 for DISPLAY\\Default_Monitor\\1&8713bca&0&UID0, last instance field') }
 
 Write-Host 'Display change diagnostic' -ForegroundColor Cyan
 . (Join-Path $root 'diagnostics\Get-DisplayChange.ps1')
