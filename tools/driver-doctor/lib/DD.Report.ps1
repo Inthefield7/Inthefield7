@@ -149,24 +149,44 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
     return $sb.ToString()
 }
 
+function ConvertTo-DDConsoleText {
+    # SEC-006: device names, event text and snapshot values reach the console. Remove ANSI/VT escape
+    # sequences (CSI, OSC, other ESC sequences, 8-bit CSI), then every remaining C0/C1 control
+    # character and Unicode bidi override, so a string cannot clear the screen, move the cursor,
+    # recolor, retitle the window, overwrite a line with a carriage return, or reorder text.
+    # Tabs and line breaks become spaces, so each value stays on its own line.
+    param($Text)
+    $s = [string]$Text
+    if (-not $s) { return '' }
+    $s = $s -replace '\x1B\][^\x07\x1B]*(\x07|\x1B\\)?', ''        # OSC ... BEL or ST
+    $s = $s -replace '(\x1B\[|\x9B)[\x30-\x3F]*[\x20-\x2F]*[\x40-\x7E]?', ''   # CSI
+    $s = $s -replace '\x1B[\x20-\x2F]*[\x30-\x7E]?', ''            # other ESC sequences, lone ESC
+    $s = $s -replace '[\t\r\n]', ' '
+    $s = $s -replace '[\p{Cc}\p{Cf}]', ''   # C0/C1 controls and format characters (bidi marks, overrides)
+    return $s
+}
+
 function Write-DDConsoleSummary {
     param($Analysis, $Comparison)
     $colors = @{ Critical = 'Red'; High = 'Red'; Medium = 'Yellow'; Low = 'Cyan'; Info = 'Gray' }
+    # An unknown severity (crafted snapshot) prints in gray instead of failing on a null color.
+    $color = { param($sev) $c = $colors[[string]$sev]; if ($c) { $c } else { 'Gray' } }
+    $t = { param($x) ConvertTo-DDConsoleText $x }
     $v = $Analysis.Verdict
     Write-Host ''
-    Write-Host "Built-in display: $($v.State) [$($v.Confidence)]" -ForegroundColor $colors[$v.Severity]
-    Write-Host "  $($v.Summary)"
-    Write-Host "  Next: $($v.NextStep)"
+    Write-Host "Built-in display: $(& $t $v.State) [$(& $t $v.Confidence)]" -ForegroundColor (& $color $v.Severity)
+    Write-Host "  $(& $t $v.Summary)"
+    Write-Host "  Next: $(& $t $v.NextStep)"
     Write-Host ''
     foreach ($f in $Analysis.Findings) {
         if ($f.Id -eq 'INTERNAL-PANEL' -or $f.Severity -eq 'Info') { continue }
-        Write-Host ("[{0,-8}] {1}" -f $f.Severity, $f.Title) -ForegroundColor $colors[$f.Severity]
+        Write-Host ("[{0,-8}] {1}" -f (& $t $f.Severity), (& $t $f.Title)) -ForegroundColor (& $color $f.Severity)
     }
     $info = @($Analysis.Findings | Where-Object { $_.Severity -eq 'Info' }).Count
     if ($info -gt 0) { Write-Host "($info informational item(s) in the HTML report)" -ForegroundColor Gray }
     if ($Comparison) {
         Write-Host ''
         Write-Host "Repair result: fixed $(@($Comparison.Fixed).Count), still present $(@($Comparison.Remaining).Count), new $(@($Comparison.New).Count)" -ForegroundColor Cyan
-        foreach ($n in $Comparison.New) { Write-Host "  NEW: $($n.Title)" -ForegroundColor Red }
+        foreach ($n in $Comparison.New) { Write-Host "  NEW: $(& $t $n.Title)" -ForegroundColor Red }
     }
 }

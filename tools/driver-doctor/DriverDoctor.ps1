@@ -131,7 +131,7 @@ try {
     elseif (@($plan).Count -gt 0) {
         Write-Host "`nRepair plan (not applied; run Run-Repair.cmd or -Mode Repair -WhatIf to preview):" -ForegroundColor Cyan
         $i = 0
-        foreach ($p in $plan) { $i++; Write-Host ("  {0}. {1} {2} - {3}" -f $i, $p.Type, $p.Target, $p.Detail) }
+        foreach ($p in $plan) { $i++; Write-Host ("  {0}. {1} {2} - {3}" -f $i, (ConvertTo-DDConsoleText $p.Type), (ConvertTo-DDConsoleText $p.Target), (ConvertTo-DDConsoleText $p.Detail)) }
     }
 
     $html = ConvertTo-DDHtmlReport -Snapshot $finalSnapshot -Analysis $finalAnalysis -Plan $plan -RepairResults $repairResults -Comparison $comparison -Mode $Mode

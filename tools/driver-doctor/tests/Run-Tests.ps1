@@ -245,6 +245,24 @@ $eh = ConvertTo-DDHtmlReport -Snapshot (Get-Base) -Analysis $ea -Plan @() -Mode 
 Test-That 'crafted verdict severity cannot add an attribute' { ($eh -notmatch '" onmouseover="') -and ($eh -match 'class="card Unknown"') -and ($eh -match 'High&quot; onmouseover=&quot;alert\(1\)') }
 Test-That 'crafted finding severity is encoded, not markup' { ($eh -notmatch '<img src=x') -and ($eh -match '&lt;img src=x onerror=alert\(2\)&gt;') }
 Test-That 'known severities keep their class names' { ($html -match 'class="card High"|class="card Medium"|class="card Low"|class="card Info"') -and (ConvertTo-DDSeverityClass 'High') -eq 'High' -and (ConvertTo-DDSeverityClass 'high') -eq 'Unknown' -and (ConvertTo-DDSeverityClass $null) -eq 'Unknown' }
+# SEC-006: console output must not carry escape sequences or control characters from snapshot strings.
+$esc = [string][char]27; $bel = [string][char]7
+$hasCtl = { param($x) [string]$x -match '[\p{Cc}\p{Cf}]' }
+# Ordinal comparison: PowerShell's -eq is culture-aware and can ignore invisible format characters.
+$same = { param($a, $b) [string]::Equals([string]$a, [string]$b, [System.StringComparison]::Ordinal) }
+Test-That 'console text: CSI clear-screen, cursor move and color removed, text kept' { & $same (ConvertTo-DDConsoleText ("Intel" + $esc + "[2J" + $esc + "[1;1H" + $esc + "[31;1mGPU" + $esc + "[0m")) 'IntelGPU' }
+Test-That 'console text: OSC window title (BEL and ST forms) removed' { (& $same (ConvertTo-DDConsoleText ("A" + $esc + "]0;pwned" + $bel + "B")) 'AB') -and (& $same (ConvertTo-DDConsoleText ("A" + $esc + "]2;pwned" + $esc + "\B")) 'AB') }
+Test-That 'console text: 8-bit CSI, lone ESC, NUL, DEL and C1 removed' { $o = ConvertTo-DDConsoleText ("a" + [char]0x9B + "2Jb" + $esc + "c" + [char]0 + "d" + [char]0x7F + [char]0x85 + "e"); (& $same $o 'abde') -and -not (& $hasCtl $o) }
+Test-That 'console text: carriage return and newline cannot overwrite or split a line' { & $same (ConvertTo-DDConsoleText ("Display OK`rFAKE: all good`nnext")) 'Display OK FAKE: all good next' }
+Test-That 'console text: bidi overrides removed; plain and empty text unchanged' { (& $same (ConvertTo-DDConsoleText ("abc" + [char]0x202E + "fed" + [char]0x2066 + [char]0x200F)) 'abcfed') -and (& $same (ConvertTo-DDConsoleText 'Intel(R) Graphics - 32.0.101.6733') 'Intel(R) Graphics - 32.0.101.6733') -and (& $same (ConvertTo-DDConsoleText $null) '') }
+$ca = Invoke-DDAnalysis -Snapshot (Get-Base)
+$cf = @($ca.Findings | Where-Object { $_.Id -ne 'INTERNAL-PANEL' -and $_.Severity -ne 'Info' })[0]
+$cf.Title = 'Evil' + $esc + '[2J' + $esc + ']0;owned' + $bel + "`rspoof"
+$ca.Verdict.Summary = 'Sum' + $esc + '[31mmary'
+$cs = @(Write-DDConsoleSummary -Analysis $ca 6>&1 | ForEach-Object { [string]$_ })
+Test-That 'console summary prints no control characters, keeps the text' { $cs.Count -gt 3 -and @($cs | Where-Object { & $hasCtl $_ }).Count -eq 0 -and (($cs -join "`n") -match 'Evil spoof') -and (($cs -join "`n") -match 'Summary') }
+$ca.Verdict.Severity = 'Bogus'; $cf.Severity = 'Bogus'
+Test-That 'console summary survives an unknown severity (no null color)' { @(Write-DDConsoleSummary -Analysis $ca 6>&1).Count -gt 3 }
 Test-That 'report carries a restrictive CSP before any content' {
     $csp = [regex]::Match($html, '<meta http-equiv="Content-Security-Policy" content="([^"]+)">')
     $csp.Success -and $csp.Groups[1].Value -match "default-src 'none'" -and $csp.Groups[1].Value -notmatch 'script-src' -and

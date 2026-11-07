@@ -258,7 +258,7 @@ function Invoke-DDRepair {
     foreach ($u in @($Snapshot.WindowsUpdate.Updates)) { if ($u) { $titles[[string]$u.UpdateId] = $u.Title } }
     Write-Host "`nRepair steps (each one asks first):" -ForegroundColor Cyan
     foreach ($a in $Plan) {
-        Write-Host "`n> $($a.Type) $($a.Target)`n  $($a.Detail)" -ForegroundColor White
+        Write-Host "`n> $(ConvertTo-DDConsoleText $a.Type) $(ConvertTo-DDConsoleText $a.Target)`n  $(ConvertTo-DDConsoleText $a.Detail)" -ForegroundColor White
         $r = switch ($a.Type) {
             'EnableDevice' { Invoke-DDEnableDevice -Action $a }
             'ExtendTopology' { Invoke-DDExtendTopology -Action $a }
@@ -270,7 +270,7 @@ function Invoke-DDRepair {
             'RestartComputer' { $null }  # handled last, once
             default { New-DDResult $a 'Manual step' $a.Detail }
         }
-        if ($r) { $results.Add($r); Write-Host "  -> $($r.Result) $($r.Detail)" -ForegroundColor DarkGray }
+        if ($r) { $results.Add($r); Write-Host "  -> $(ConvertTo-DDConsoleText $r.Result) $(ConvertTo-DDConsoleText $r.Detail)" -ForegroundColor DarkGray }
     }
     return $results.ToArray()
 }
