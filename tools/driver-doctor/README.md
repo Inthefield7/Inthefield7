@@ -57,7 +57,7 @@ It writes `Desktop\DisplayChange-<timestamp>.txt`. The file compares the current
 
 | Repair does | Repair never does |
 |---|---|
-| System restore point first. `pnputil /export-driver` backup of every affected driver package. | Uninstall drivers or delete driver-store packages |
+| System restore point first. `pnputil /export-driver` backup of every affected driver package, into a new `%ProgramData%\DriverDoctor\<timestamp>\driver-backup` folder only administrators can change (if that folder can't be made safely, Repair stops before changing anything). | Uninstall drivers or delete driver-store packages |
 | Restart a failed device (`pnputil /restart-device`). This does not persist, so a reboot undoes it. | Restart storage, CPU or platform devices |
 | Rescan PnP (`pnputil /scan-devices`) | Install unsigned drivers or bypass signature checks |
 | Re-enable a disabled **monitor or display** device | Re-enable other disabled devices (they may be disabled on purpose) |

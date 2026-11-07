@@ -391,11 +391,12 @@ function New-DDSecureDirectory {
     }
 }
 
-function Get-DDHPIAWorkDir {
-    # SEC-002: a fresh folder for HPIA reports and SoftPaqs under %ProgramData%\DriverDoctor that only
-    # SYSTEM and Administrators can change. The Desktop work folder is writable by any program the
-    # user runs, which could swap a downloaded installer or plant a junction before HPIA (running as
-    # administrator) uses it. Throws instead of falling back to a weaker folder.
+function Get-DDAdminWorkDir {
+    # SEC-002: a fresh folder under %ProgramData%\DriverDoctor that only SYSTEM and Administrators can
+    # change, for anything later run or installed as administrator: HPIA reports and SoftPaqs, and the
+    # driver backup that the undo advice tells the user to reinstall with pnputil. The Desktop work
+    # folder is writable by any program the user runs, which could swap a file or plant a junction
+    # before it is used. Throws instead of falling back to a weaker folder.
     # -Root exists for tests only.
     param([string]$Root = (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'DriverDoctor'))
     $root = $Root
@@ -404,8 +405,8 @@ function Get-DDHPIAWorkDir {
     }
     foreach ($check in 1, 2) {
         $item = Get-Item -LiteralPath $root -Force
-        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw "$root is a link or junction; HPIA folders are not created there." }
-        if (-not (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $root).Sddl)) { throw "$root can be changed by non-administrators; HPIA folders are not created there. Remove it (as administrator) and re-run." }
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw "$root is a link or junction; work folders are not created there." }
+        if (-not (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $root).Sddl)) { throw "$root can be changed by non-administrators; work folders are not created there. Remove it (as administrator) and re-run." }
         if ($check -eq 1) {
             $leaf = Join-Path $root ('{0}-{1}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), [guid]::NewGuid().ToString('N').Substring(0, 8))
             New-DDSecureDirectory $leaf
@@ -421,7 +422,7 @@ function Get-DDHPIAAnalysis {
     $exe = $found.Path
     $r = [pscustomobject]@{ Present = [bool]$exe; Path = $exe; HPIAPathGiven = [bool]$HPIAPath; Rejected = @($found.Rejected); ExitCode = $null; Error = $null; ReportFolder = $null; Recommendations = @() }
     if (-not $exe) { return $r }
-    try { $base = Get-DDHPIAWorkDir }
+    try { $base = Get-DDAdminWorkDir }
     catch { $r.Error = "HPIA not run: no safe work folder ($($_.Exception.Message))"; return $r }
     # Created with the explicit admin-only ACL (owner Administrators). Not copied to the Desktop:
     # copying as administrator into a user-writable folder is exactly what a junction could redirect.

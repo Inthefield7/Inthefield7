@@ -43,14 +43,16 @@ function New-DDRestorePoint {
 }
 
 function Backup-DDDrivers {
+    # SEC-002: Folder must be new and is created administrators-only, as is each package folder:
+    # the undo advice reinstalls these packages as administrator.
     param([object[]]$Devices, [string]$Folder)
-    New-Item -ItemType Directory -Force -Path $Folder | Out-Null
+    New-DDSecureDirectory $Folder
     (Invoke-DDNative 'pnputil.exe' @('/enum-drivers')).Output | Set-Content -LiteralPath (Join-Path $Folder 'driver-store-before.txt') -Encoding UTF8
     $infs = @($Devices | ForEach-Object { $_.DriverInf } | Where-Object { $_ -match '^oem\d+\.inf$' } | Sort-Object -Unique)
     $ok = @()
     foreach ($inf in $infs) {
         $dest = Join-Path $Folder ($inf -replace '\.inf$', '')
-        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        New-DDSecureDirectory $dest
         $r = Invoke-DDNative 'pnputil.exe' @('/export-driver', $inf, $dest)
         if ($r.ExitCode -eq 0) { $ok += $inf } else { Write-Warning "Could not export ${inf}: $($r.Output)" }
     }
@@ -203,7 +205,7 @@ function Invoke-DDHPIAInstall {
     if (-not $PSCmdlet.ShouldProcess("HP Image Assistant ($categories)", 'Download and install HP-recommended updates for this model')) { return (New-DDResult $Action 'Declined' '') }
     # SEC-002: SoftPaqs are downloaded and then run as administrator, so they live in a fresh
     # admin-only folder under %ProgramData%\DriverDoctor, never in the user-writable Desktop folder.
-    try { $base = Get-DDHPIAWorkDir }
+    try { $base = Get-DDAdminWorkDir }
     catch { return (New-DDResult $Action 'Skipped' "HPIA not run: no safe work folder ($($_.Exception.Message))") }
     $report = Join-Path $base 'hpia-install'
     $softpaqs = Join-Path $base 'hpia-softpaqs'
@@ -230,7 +232,6 @@ function Invoke-DDRepair {
     param(
         [object[]]$Plan,
         $Snapshot,
-        [string]$WorkDir,
         [string]$HPIAPath
     )
     # No -AllowRestart here: RestartComputer steps are skipped below. The only restart path is
@@ -252,7 +253,14 @@ function Invoke-DDRepair {
             }
         }
         if (-not $WhatIfPreference) {
-            $backupDir = Join-Path $WorkDir 'driver-backup'
+            # SEC-002: the backup goes to an administrators-only folder, never the Desktop work folder,
+            # because the undo advice reinstalls it as administrator. No safe folder -> no backup -> stop.
+            try { $backupDir = Join-Path (Get-DDAdminWorkDir) 'driver-backup' }
+            catch {
+                $results.Add([pscustomobject]@{ Type = 'DriverBackup'; Target = ''; Result = 'Failed'; Detail = "No safe backup folder: $($_.Exception.Message)" })
+                $results.Add([pscustomobject]@{ Type = 'Repair'; Target = ''; Result = 'Stopped'; Detail = 'Nothing was changed: repairs only run after the driver backup.' })
+                return $results.ToArray()
+            }
             $relevant = @($Snapshot.Devices | Where-Object { $_.Present -and ($_.ProblemCode -ne 0 -or $_.ClassGuid -in $script:DDClassGuid.Display, $script:DDClassGuid.Monitor, $script:DDClassGuid.Firmware) })
             $exported = Backup-DDDrivers -Devices $relevant -Folder $backupDir
             $results.Add([pscustomobject]@{ Type = 'DriverBackup'; Target = $backupDir; Result = 'Done'; Detail = "Exported: $($exported -join ', ')" })

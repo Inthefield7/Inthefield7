@@ -109,7 +109,7 @@ try {
     if ($Mode -eq 'Repair') {
         . (Join-Path $libDir 'DD.Repair.ps1')
         $repairStart = (Get-Date).ToUniversalTime()
-        $repairResults = @(Invoke-DDRepair -Plan $plan -Snapshot $snapshot -WorkDir $OutputPath -HPIAPath $HPIAPath)
+        $repairResults = @(Invoke-DDRepair -Plan $plan -Snapshot $snapshot -HPIAPath $HPIAPath)
         $applied = @($repairResults | Where-Object { $_.Result -like 'Applied*' }).Count
         if ($applied -gt 0 -and -not $WhatIfPreference) {
             Write-Host "`nVerifying: re-collecting state after repair..." -ForegroundColor Cyan
@@ -120,7 +120,9 @@ try {
             $comparison = Compare-DDFindings -Before $analysis.Findings -After $finalAnalysis.Findings
             Write-DDConsoleSummary -Analysis $finalAnalysis -Comparison $comparison
             if (@($comparison.New).Count -gt 0) {
-                Write-Warning 'New problems appeared after repair. To undo: Device Manager > device > Driver > Roll Back Driver, or restore the backed-up driver with "pnputil /add-driver <backup>\<oemNN>\*.inf /install", or use System Restore (restore point "Driver Doctor ...").'
+                $backup = @($repairResults | Where-Object { $_.Type -eq 'DriverBackup' -and $_.Result -eq 'Done' } | ForEach-Object { $_.Target }) | Select-Object -First 1
+                if (-not $backup) { $backup = '<backup>' }
+                Write-Warning "New problems appeared after repair. To undo: Device Manager > device > Driver > Roll Back Driver, or restore the backed-up driver from an elevated prompt with `"pnputil /add-driver $backup\<oemNN>\*.inf /install`", or use System Restore (restore point `"Driver Doctor ...`")."
             }
         }
         if (@($plan | Where-Object { $_.Type -eq 'RestartComputer' }).Count -gt 0) {

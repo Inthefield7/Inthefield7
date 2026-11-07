@@ -250,22 +250,59 @@ if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
         }
         Test-That 'an existing folder is never reused' { $threw = $false; try { New-DDSecureDirectory -Path $sd -Sddl "D:PAI(A;;FA;;;$me)" } catch { $threw = $true }; $threw }
         $plain = Join-Path $sroot 'plain'; New-Item -ItemType Directory -Path $plain | Out-Null
-        Test-That 'work folder refused when the root is user-writable' { $m = ''; try { Get-DDHPIAWorkDir -Root $plain | Out-Null } catch { $m = $_.Exception.Message }; $m -match 'non-administrators' -and @(Get-ChildItem -LiteralPath $plain).Count -eq 0 }
+        Test-That 'work folder refused when the root is user-writable' { $m = ''; try { Get-DDAdminWorkDir -Root $plain | Out-Null } catch { $m = $_.Exception.Message }; $m -match 'non-administrators' -and @(Get-ChildItem -LiteralPath $plain).Count -eq 0 }
         $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
         # Elevated: the target itself is admin-only, so only the link check can refuse it.
         $jt = Join-Path $sroot 'tgt'
         if ($elevated) { New-DDSecureDirectory $jt } else { New-Item -ItemType Directory -Path $jt | Out-Null }
         $jn = Join-Path $sroot 'lnk'; New-Item -ItemType Junction -Path $jn -Value $jt | Out-Null
-        Test-That 'work folder refused when the root is a junction' { $m = ''; try { Get-DDHPIAWorkDir -Root $jn | Out-Null } catch { $m = $_.Exception.Message }; $m -match 'is a link or junction' -and @(Get-ChildItem -LiteralPath $jt -Force).Count -eq 0 }
+        Test-That 'work folder refused when the root is a junction' { $m = ''; try { Get-DDAdminWorkDir -Root $jn | Out-Null } catch { $m = $_.Exception.Message }; $m -match 'is a link or junction' -and @(Get-ChildItem -LiteralPath $jt -Force).Count -eq 0 }
         if ($elevated) {
             $wr = Join-Path $sroot 'pd'
-            $leaf = Get-DDHPIAWorkDir -Root $wr
+            $leaf = Get-DDAdminWorkDir -Root $wr
             Test-That 'elevated: fresh work folder is administrators-only, inside an administrators-only root' { $leaf -like "$wr\*" -and (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $wr).Sddl) -and (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $leaf).Sddl) }
-            $leaf2 = Get-DDHPIAWorkDir -Root $wr
+            $leaf2 = Get-DDAdminWorkDir -Root $wr
             Test-That 'elevated: each call gets a new folder; HPIA subfolders are administrators-only' { $sub = Join-Path $leaf2 'hpia-softpaqs'; New-DDSecureDirectory $sub; $leaf2 -ne $leaf -and (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $sub).Sddl) }
             Test-That 'elevated: a file created there by plain means stays administrators-only' { $f = Join-Path $leaf2 'hpia-softpaqs\sp1.exe'; Set-Content -LiteralPath $f -Value 'x' -Encoding Ascii; Test-DDAdminOnlySddl (Get-Acl -LiteralPath $f).Sddl }
         }
         else { Write-Host '  SKIP elevated work-folder creation (not running as administrator)' -ForegroundColor Yellow }
+
+        # Driver backup (SEC-002 residual). Every system call is stubbed; the originals come back after.
+        $saved = @{}
+        foreach ($n in 'Invoke-DDNative', 'New-DDRestorePoint', 'Invoke-DDScanDevices', 'Get-DDAdminWorkDir') { $saved[$n] = (Get-Item "function:$n").ScriptBlock }
+        try {
+            $script:nativeCalls = New-Object System.Collections.Generic.List[string]
+            $script:scanCalls = 0
+            function Invoke-DDNative { $script:nativeCalls.Add((@($args[1]) -join ' ')); [pscustomobject]@{ ExitCode = 0; Output = 'stub' } }   # args: file, arguments
+            function New-DDRestorePoint { [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')] param() $true }
+            function Invoke-DDScanDevices { param($Action) $script:scanCalls++; New-DDResult $Action 'Applied' 'stub' }
+            $bsnap = [pscustomobject]@{ Devices = @([pscustomobject]@{ Present = $true; ProblemCode = 0; ClassGuid = $script:DDClassGuid.Display; DriverInf = 'oem39.inf' }); WindowsUpdate = $null }
+            $bplan = @(New-DDAction 'ScanDevices' 'pnp' 'x')
+            function Get-DDAdminWorkDir { throw 'stub: root is a junction' }
+            $br = @(Invoke-DDRepair -Plan $bplan -Snapshot $bsnap 6>$null)
+            Test-That 'Repair stops before any change when there is no safe backup folder' {
+                @($br | Where-Object { $_.Type -eq 'DriverBackup' -and $_.Result -eq 'Failed' -and $_.Detail -match 'stub: root is a junction' }).Count -eq 1 -and
+                @($br | Where-Object { $_.Type -eq 'Repair' -and $_.Result -eq 'Stopped' }).Count -eq 1 -and $script:scanCalls -eq 0 -and $script:nativeCalls.Count -eq 0
+            }
+            $pb = Join-Path $sroot 'exists'; New-Item -ItemType Directory -Path $pb | Out-Null
+            Test-That 'driver backup never reuses an existing folder' { $t = $false; try { Backup-DDDrivers -Devices $bsnap.Devices -Folder $pb | Out-Null } catch { $t = $true }; $t -and $script:nativeCalls.Count -eq 0 }
+            if ($elevated) {
+                $origWork = $saved['Get-DDAdminWorkDir']
+                $pd2 = Join-Path $sroot 'pd2'
+                function Get-DDAdminWorkDir { & $origWork -Root $pd2 }
+                $br2 = @(Invoke-DDRepair -Plan $bplan -Snapshot $bsnap 6>$null)
+                $bk = @($br2 | Where-Object { $_.Type -eq 'DriverBackup' })[0]
+                Test-That 'elevated: driver backup goes to a new administrators-only folder, then the repair runs' {
+                    $bk.Result -eq 'Done' -and $bk.Target -like "$pd2\*\driver-backup" -and
+                    (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $bk.Target).Sddl) -and
+                    (Test-DDAdminOnlySddl (Get-Acl -LiteralPath (Join-Path $bk.Target 'oem39')).Sddl) -and
+                    (Test-DDAdminOnlySddl (Get-Acl -LiteralPath (Join-Path $bk.Target 'driver-store-before.txt')).Sddl) -and $script:scanCalls -eq 1
+                }
+                Test-That 'elevated: the driver package is exported into that folder' { @($script:nativeCalls | Where-Object { $_ -eq "/export-driver oem39.inf $(Join-Path $bk.Target 'oem39')" }).Count -eq 1 }
+            }
+            else { Write-Host '  SKIP elevated driver-backup folder (not running as administrator)' -ForegroundColor Yellow }
+        }
+        finally { foreach ($n in $saved.Keys) { Set-Item "function:$n" $saved[$n] } }
     }
     finally {
         if (Test-Path -LiteralPath $jn) { cmd /c rmdir "$jn" | Out-Null }
