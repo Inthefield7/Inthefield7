@@ -31,6 +31,16 @@ Nothing is joined into a cause unless something connects it: the same device ID,
 
 **Manual check that no software can do:** unplug the external monitor and power on. If the HP logo appears on the built-in screen, the panel and cable work and the fault is in Windows or the driver. If the screen stays black (shine a flashlight on it to check), press **F2** repeatedly at power-on and run *HP PC Hardware Diagnostics > Component Tests > Video*.
 
+## The screen came back on its own? Find out why
+
+Run this before you restart or install anything. It only reads, and finishes in about a minute:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\diagnostics\Get-DisplayChange.ps1
+```
+
+It writes `Desktop\DisplayChange-<timestamp>.txt`. The file compares the current state with the 2026-08-26 evidence: which GPU driver is installed now, whether the staged firmware capsule was applied, the BIOS version, whether the built-in panel is present and active, and a timeline of driver installs, Windows Updates, boots (full boot vs. Fast Startup) and recent sleep/resume. It lists facts only; the cause is decided from what connects.
+
 ## What it checks
 
 - Every present device with a Device Manager problem code, decoded (`CM_PROB_*` plus NTSTATUS).
@@ -88,7 +98,8 @@ lib/DD.Analysis.ps1     pure analysis: decoders, parsers, correlation, findings,
 lib/DD.Repair.ps1       confirm-each-step actions (ShouldProcess, ConfirmImpact High)
 lib/DD.Report.ps1       HTML report and console summary
 lib/DisplayConfig.cs    QueryDisplayConfig / SetDisplayConfig interop (C# 5, compiles under 5.1)
-diagnostics/            standalone read-only checks (Test-BonjourLsa.ps1: Bonjour/LSA dialog root cause)
+diagnostics/            standalone read-only checks (Test-BonjourLsa.ps1: Bonjour/LSA dialog root cause;
+                        Get-DisplayChange.ps1: what changed since 2026-08-26 when the panel works again)
 tests/Run-Tests.ps1     dependency-free tests; fixture built from the 2026-08-26 screenshots
 ```
 

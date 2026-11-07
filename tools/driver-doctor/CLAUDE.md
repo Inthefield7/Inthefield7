@@ -8,12 +8,13 @@ Get the **built-in display** of an HP ENVY x360 2-in-1 16-ac0xxx (2024, Intel Co
 
 Done = the built-in panel shows the desktop after a normal boot. The proof is `report.html` showing the verdict `Active` plus the user confirming it by eye.
 
-## Status (2026-10-03; restored 2026-11-04)
+## Status (2026-10-03; restored 2026-11-04; updated 2026-11-07)
 
 | Item | Status |
 |---|---|
+| **Built-in panel works again (no repair was run by this tool)** | FOUNDER-STATED 2026-11-07; cause UNKNOWN until `Get-DisplayChange.ps1` output is read |
 | Tool built: collect -> analyze -> (repair -> re-verify) -> report | DONE |
-| `tests/Run-Tests.ps1`: 66/66 pass on PowerShell 7.4 (Linux) | VERIFIED |
+| `tests/Run-Tests.ps1`: 78/78 pass on PowerShell 7.4 (Linux) | VERIFIED |
 | PSScriptAnalyzer: 0 findings against Windows PowerShell 5.1 and 7.0 profiles | VERIFIED |
 | `lib/DisplayConfig.cs` compiles; marshaled sizes 72/64/420 match Win32 | VERIFIED |
 | Restored to git on 2026-11-04 from the session record after a container reset; the replay reproduced the original 57/2 and 63/63 checkpoints and the final 66/66 | VERIFIED |
@@ -31,6 +32,7 @@ Done = the built-in panel shows the desktop after a normal boot. The proof is `r
 
 ## Next actions, in order
 
+0. **The panel came back on 2026-11-07.** First, while it still works, the user runs `diagnostics\Get-DisplayChange.ps1` (read-only, elevated). Read the `DisplayChange-*.txt` on the Desktop: collection errors first, then OBSERVATIONS, then the timeline between the last 411/442 and now. Decide the cause only from connected facts: a different GPU INF than `oem39.inf` = new driver; firmware `APPLIED` + BIOS date = capsule applied; neither = no software change found (transient start failure or intermittent hardware, which this data cannot separate). Do not run Repair while the panel works.
 1. Run the tests in **Windows PowerShell 5.1**: `powershell -ExecutionPolicy Bypass -File tests\Run-Tests.ps1`. Expect 66/66. Fix anything that fails only on 5.1.
 2. The user runs `Run-Diagnose.cmd` (elevated, read-only). Read `Desktop\DriverDoctor\<ts>\report.html` and `snapshot.json`.
 3. Check `snapshot.json` -> `CollectionErrors` first. Any failed collector is a bug from the first real-hardware run. Fix it before trusting conclusions.
@@ -58,7 +60,7 @@ lib/DD.Analysis.ps1   PURE: decoders, parsers, correlation, findings, verdict, r
 lib/DD.Repair.ps1     actions with ShouldProcess (ConfirmImpact High); restore point + driver backup first
 lib/DD.Report.ps1     HTML report + console summary (pure)
 lib/DisplayConfig.cs  QueryDisplayConfig / SetDisplayConfig(SDC_TOPOLOGY_EXTEND)
-diagnostics/          standalone read-only checks (Test-BonjourLsa.ps1)
+diagnostics/          standalone read-only checks (Test-BonjourLsa.ps1, Get-DisplayChange.ps1)
 tests/Run-Tests.ps1   dependency-free tests; fixture = screenshots + labeled ASSUMED values
 ```
 

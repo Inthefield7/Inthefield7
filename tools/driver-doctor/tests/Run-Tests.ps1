@@ -177,6 +177,62 @@ $html = ConvertTo-DDHtmlReport -Snapshot $evil -Analysis (Invoke-DDAnalysis -Sna
 Test-That 'device names are HTML-encoded' { ($html -notmatch '<script>alert') -and ($html -match '&lt;script&gt;') }
 Test-That 'report leads with the built-in display verdict' { $html.IndexOf('Built-in display') -lt $html.IndexOf('<h2>Findings') }
 
+Write-Host 'Display change diagnostic' -ForegroundColor Cyan
+. (Join-Path $root 'diagnostics\Get-DisplayChange.ps1')
+$setupLog = @(
+    '>>>  [Device Install (Hardware initiated) - PCI\VEN_8086&DEV_7D45&SUBSYS_8C66103C&REV_08\3&11583659&0&10]',
+    '>>>  Section start 2026/11/06 21:14:03.512',
+    '     dvi: Selected Driver: iigd_dch.inf',
+    '<<<  Section end 2026/11/06 21:14:09.001',
+    '<<<  [Exit status: SUCCESS]',
+    '>>>  [Device Install (Hardware initiated) - USB\VID_046D&PID_C52B\5&1]',
+    '>>>  Section start 2026/11/06 21:20:00.000',
+    '<<<  [Exit status: SUCCESS]',
+    '>>>  [Device Install (Hardware initiated) - DISPLAY\CMN163B\4&5423816&0&UID0]',
+    '>>>  Section start 2026/08/01 08:00:00.000',
+    '<<<  [Exit status: SUCCESS]'
+)
+$si = @(Get-DCSetupApiInstalls -Lines $setupLog -Since ([datetime]'2026-08-20') -Pattern @('DEV_7D45', 'CMN163B'))
+Test-That 'setupapi: keeps matching installs after -Since only' { $si.Count -eq 1 -and $si[0].Text -like '*DEV_7D45*' -and $si[0].Status -eq 'SUCCESS' -and $si[0].Time -eq [datetime]'2026-11-06T21:14:03' }
+Test-That 'boot type 0x1 = Fast Startup' { (Get-DCBootTypeText 'The boot type was 0x1.') -like '*Fast Startup*' }
+Test-That 'boot type 0x0 = full boot' { (Get-DCBootTypeText 'The boot type was 0x0.') -like '*full boot*' }
+Test-That 'event message flattens to key fields' { (ConvertTo-DCLine $m442) -match 'Present=false' -and (ConvertTo-DCLine $m442) -match 'Last Device Instance Id=DISPLAY\\CMN163B' }
+
+$recovered = [pscustomobject]@{
+    Gpus           = @([pscustomobject]@{ Name = 'Intel(R) Graphics'; InstanceId = $gpuId; Present = $true; Status = 'OK'; Problem = 0; Inf = 'oem52.inf'; Version = '32.0.101.6299'; Date = '2026-10-01' })
+    Monitors       = @([pscustomobject]@{ Name = 'Generic PnP Monitor'; InstanceId = 'DISPLAY\CMN163B\4&5423816&0&UID0'; Present = $true; Status = 'OK' })
+    ActiveMonitors = @([pscustomobject]@{ InstanceName = 'DISPLAY\CMN163B\4&5423816&0&UID0_0'; Name = ''; Technology = 'INTERNAL'; Internal = $true })
+    Firmware       = @([pscustomobject]@{ Guid = '{F9A422C9-7892-42C3-A237-218610BFD215}'; Version = 16842752; LastAttemptVersion = 16842752; LastAttemptStatus = 0 })
+    Bios           = [pscustomobject]@{ Version = 'F.10'; ReleaseDate = '2026-09-15' }
+    Os             = [pscustomobject]@{ LastBoot = '2026-11-07 09:00:00' }
+    FastStartup    = $true
+    PnpRead        = $true
+    Timeline       = @(
+        [pscustomobject]@{ Time = [datetime]'2026-08-26T19:49:44'; Source = 'Kernel-PnP'; Id = 411; Text = "Device $gpuId had a problem starting." },
+        [pscustomobject]@{ Time = [datetime]'2026-08-26T19:49:44'; Source = 'Kernel-PnP'; Id = 442; Text = 'Device settings for DISPLAY\Default_Monitor were not migrated | Last Device Instance Id=DISPLAY\CMN163B\4&5423816&0&UID0 | Present=false' },
+        [pscustomobject]@{ Time = [datetime]'2026-11-07T09:00:05'; Source = 'Kernel-PnP'; Id = 400; Text = "Device $gpuId was configured. | Driver Name=oem52.inf" },
+        [pscustomobject]@{ Time = [datetime]'2026-11-07T09:00:06'; Source = 'Kernel-PnP'; Id = 400; Text = 'Device DISPLAY\CMN163B\4&5423816&0&UID0 was configured.' },
+        [pscustomobject]@{ Time = [datetime]'2026-11-07T09:00:00'; Source = 'Kernel-Boot'; Id = 27; Text = 'Boot type 0x0: full boot (cold start)' }
+    )
+}
+$ob = @(Get-DCObservations -State $recovered) -join "`n"
+Test-That 'observations: new GPU package is called out as VERIFIED' { $ob -match 'DIFFERENT package.*oem39\.inf.*VERIFIED' }
+Test-That 'observations: firmware capsule reported APPLIED from registry' { $ob -match 'APPLIED' }
+Test-That 'observations: active internal monitor reported' { $ob -match 'Active monitor now: DISPLAY\\CMN163B.*INTERNAL' -and $ob -notmatch 'NO active internal' }
+Test-That 'observations: panel return time after the 442 loss' { $ob -match 'First panel configure/start event after that: 2026-11-07 09:00:06' }
+
+$still = $recovered.PSObject.Copy()
+$still.Gpus = @([pscustomobject]@{ Name = 'Intel(R) Graphics'; InstanceId = $gpuId; Present = $true; Status = 'OK'; Problem = 0; Inf = 'oem39.inf'; Version = '32.0.101.5768'; Date = '2024-07-12' })
+$still.Firmware = @([pscustomobject]@{ Guid = '{F9A422C9-7892-42C3-A237-218610BFD215}'; Version = 16842496; LastAttemptVersion = 16842752; LastAttemptStatus = -1073741102 })
+$still.ActiveMonitors = @()
+$ob2 = @(Get-DCObservations -State $still) -join "`n"
+Test-That 'observations: same oem39.inf is not claimed as a new driver' { $ob2 -match 'same package name' -and $ob2 -notmatch 'DIFFERENT package' }
+Test-That 'observations: un-applied capsule is not reported as applied' { $ob2 -match 'NOT applied' -and $ob2 -notmatch 'APPLIED:' }
+Test-That 'observations: no active internal monitor is stated' { $ob2 -match 'NO active internal monitor' }
+$unread = [pscustomobject]@{ Gpus = $null; Monitors = $null; ActiveMonitors = $null; Firmware = $null; Bios = $null; Os = $null; PnpRead = $false; Timeline = @() }
+$ob3 = @(Get-DCObservations -State $unread) -join "`n"
+Test-That 'observations: failed collection says NOT READ, never "none"' { ($ob3 -match 'Active monitors: NOT READ') -and ($ob3 -match 'Kernel-PnP configuration log: NOT READ') -and ($ob3 -notmatch 'NO active internal') -and ($ob3 -notmatch 'No GPU start failure') -and ($ob3 -notmatch 'Active monitor now') }
+
 Write-Host 'End to end (offline snapshot mode)' -ForegroundColor Cyan
 $out = Join-Path ([IO.Path]::GetTempPath()) ("dd-test-" + [guid]::NewGuid().ToString('N'))
 $pwshExe = (Get-Process -Id $PID).Path
