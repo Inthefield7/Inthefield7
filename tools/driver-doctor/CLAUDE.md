@@ -25,7 +25,7 @@ Done = the built-in panel shows the desktop after a normal boot. The proof is `r
 | Tests under **Windows PowerShell 5.1** | VERIFIED 2026-11-06 (fixed: Repair-refusal test threw NativeCommandError under 'Stop') |
 | Live Diagnose collectors on real Windows | VERIFIED 2026-11-06: elevated run, `CollectionErrors` empty, verdict `Active` [VERIFIED]; saved as `tests/fixtures/envy-live.snapshot.json` (computer name -> `REDACTED-PC`) |
 | Repair actions on real Windows | NOT RUN - never executed on hardware (do not run while the panel works) |
-| HP logo / F2 hardware check | NOT DONE - user must do it |
+| HP logo / F2 hardware check | DONE 2026-11-07 by the user: external monitor unplugged, power on, the HP logo showed on the built-in panel and Windows booted to the desktop on it. Panel and cable work; any future fault is software. VERIFIED by eye; F2 Component Tests not needed |
 
 ## Evidence so far (Event Viewer screenshots, 2026-08-26, local time)
 
@@ -42,7 +42,7 @@ Done = the built-in panel shows the desktop after a normal boot. The proof is `r
 2. The user runs `Run-Diagnose.cmd` (elevated, read-only). Read `%ProgramData%\DriverDoctor\<ts>\report.html` and `snapshot.json` (the path is printed at the end; nothing goes to the Desktop from an elevated run).
 3. Check `snapshot.json` -> `CollectionErrors` first. Any failed collector is a bug from the first real-hardware run. Fix it before trusting conclusions.
 4. Confirm the real data against the assumptions below; adjust the parsers where they differ.
-5. The user does the hardware check: external monitor unplugged, power on. If the HP logo shows on the panel, the problem is software. If the screen is black, use F2 > Component Tests > Video.
+5. DONE 2026-11-07: the hardware check. External monitor unplugged, power on: the HP logo showed on the built-in panel and Windows booted to the desktop on it. The panel and cable work, so if the fault ever returns it is software (Windows or the driver), and F2 > Component Tests > Video is not needed.
 6. `DriverDoctor.ps1 -Mode Repair -WhatIf`, then review the plan with the user. Only then `Run-Repair.cmd`. The user answers every prompt.
 7. DONE 2026-11-06: `tests/fixtures/envy-live.snapshot.json` (computer name replaced) and "Scenario L" tests pin its verdict `Active`, the GPU history as Low, a plan that never touches the display or GPU, and the still-unapplied firmware capsule.
 

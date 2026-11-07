@@ -30,7 +30,7 @@ Optional, recommended on HP machines: extract [HP Image Assistant](https://ftp.e
 
 Nothing is joined into a cause unless something connects it: the same device ID, the same driver, or the same boot window. Timing alone is labeled as timing.
 
-**Manual check that no software can do:** unplug the external monitor and power on. If the HP logo appears on the built-in screen, the panel and cable work and the fault is in Windows or the driver. If the screen stays black (shine a flashlight on it to check), press **F2** repeatedly at power-on and run *HP PC Hardware Diagnostics > Component Tests > Video*.
+**Manual check that no software can do:** unplug the external monitor and power on. If the HP logo appears on the built-in screen, the panel and cable work and the fault is in Windows or the driver. If the screen stays black (shine a flashlight on it to check), press **F2** repeatedly at power-on and run *HP PC Hardware Diagnostics > Component Tests > Video*. Done on this laptop on 2026-11-07: the HP logo showed on the built-in panel and Windows booted to the desktop on it, so the panel and cable are fine and any future fault is software.
 
 ## The screen came back on its own? Find out why
 
