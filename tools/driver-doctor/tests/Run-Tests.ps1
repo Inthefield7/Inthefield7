@@ -219,7 +219,26 @@ $ob = @(Get-DCObservations -State $recovered) -join "`n"
 Test-That 'observations: new GPU package is called out as VERIFIED' { $ob -match 'DIFFERENT package.*oem39\.inf.*VERIFIED' }
 Test-That 'observations: firmware capsule reported APPLIED from registry' { $ob -match 'APPLIED' }
 Test-That 'observations: active internal monitor reported' { $ob -match 'Active monitor now: DISPLAY\\CMN163B.*INTERNAL' -and $ob -notmatch 'NO active internal' }
-Test-That 'observations: panel return time after the 442 loss' { $ob -match 'First panel configure/start event after that: 2026-11-07 09:00:06' }
+Test-That 'observations: panel configure time reported; a Default_Monitor 442 is not a panel event' { ($ob -match 'First panel configure/start event since -Since: 2026-11-07 09:00:06') -and ($ob -notmatch 'event \(442\) for the panel') }
+
+# Regression: shapes copied from the live DisplayChange report of 2026-11-06. Every 442 names the
+# panel in "Last Device Instance ID"; only the 08-29 one is ABOUT the panel.
+Test-That 'event device: 442 yields its own device, not Last Device Instance ID' { (Get-DCEventDevice 'Device settings for DISPLAY\DELD081\4&5423816&e&UID4165 were not migrated from previous OS installation due to partial or ambiguous device match. | Last Device Instance ID=DISPLAY\CMN163B\4&5423816&0&UID0 | Present=false') -eq 'DISPLAY\DELD081\4&5423816&e&UID4165' }
+Test-That 'event device: 400/411 yield the configured device' { ((Get-DCEventDevice "Device $gpuId had a problem starting. | Driver Name=oem39.inf") -eq $gpuId) -and ((Get-DCEventDevice 'Device DISPLAY\CMN163B\4&5423816&e&UID8388688 was started. | Service=monitor') -eq 'DISPLAY\CMN163B\4&5423816&e&UID8388688') }
+Test-That 'event device: unparsed (localized) text drops the key fields' { (Get-DCEventDevice 'Geraet X wurde konfiguriert. | Last Device Instance ID=DISPLAY\CMN163B\4&5423816&0&UID0') -notmatch 'CMN163B' }
+$live = $recovered.PSObject.Copy()
+$live.Timeline = @(
+    [pscustomobject]@{ Time = [datetime]'2026-08-29T13:57:54.100'; Source = 'Kernel-PnP'; Id = 442; Text = 'Device settings for DISPLAY\CMN163B\4&5423816&e&UID8388688 were not migrated from previous OS installation due to partial or ambiguous device match. | Last Device Instance ID=DISPLAY\CMN163B\4&5423816&0&UID0 | Present=false | Status=0xC0000719' },
+    [pscustomobject]@{ Time = [datetime]'2026-08-29T13:57:54.100'; Source = 'Kernel-PnP'; Id = 400; Text = 'Device DISPLAY\CMN163B\4&5423816&e&UID8388688 was configured. | Driver Name=monitor.inf' },
+    [pscustomobject]@{ Time = [datetime]'2026-08-29T13:57:54.300'; Source = 'Kernel-PnP'; Id = 410; Text = 'Device DISPLAY\CMN163B\4&5423816&e&UID8388688 was started. | Driver Name=monitor.inf | Service=monitor' },
+    [pscustomobject]@{ Time = [datetime]'2026-09-26T20:42:45'; Source = 'Kernel-PnP'; Id = 442; Text = 'Device settings for DISPLAY\VIZ0301\4&5423816&e&UID49 were not migrated from previous OS installation due to partial or ambiguous device match. | Last Device Instance ID=DISPLAY\CMN163B\4&5423816&0&UID0 | Present=false' },
+    [pscustomobject]@{ Time = [datetime]'2026-10-31T16:49:38'; Source = 'Kernel-PnP'; Id = 442; Text = 'Device settings for DISPLAY\DELD081\4&5423816&e&UID4165 were not migrated from previous OS installation due to partial or ambiguous device match. | Last Device Instance ID=DISPLAY\CMN163B\4&5423816&0&UID0 | Present=false' },
+    [pscustomobject]@{ Time = [datetime]'2026-10-31T16:49:38'; Source = 'Kernel-PnP'; Id = 400; Text = 'Device DISPLAY\DELD081\4&5423816&e&UID4165 was configured. | Driver Name=monitor.inf' }
+)
+$ob4 = @(Get-DCObservations -State $live) -join "`n"
+Test-That 'regression: 442 for another monitor naming the panel as last instance is not a panel event' { ($ob4 -notmatch '2026-10-31') -and ($ob4 -notmatch '2026-09-26') }
+Test-That 'regression: the panel''s own 442 is reported' { $ob4 -match 'event \(442\) for the panel device itself \(DISPLAY\\CMN163B\\4&5423816&e&UID8388688\): 2026-08-29 13:57:54' }
+Test-That 'regression: panel configure in the same second as its 442 is found' { $ob4 -match 'First panel configure/start event at or after that 442: 2026-08-29 13:57:54 \(event 400' }
 
 $still = $recovered.PSObject.Copy()
 $still.Gpus = @([pscustomobject]@{ Name = 'Intel(R) Graphics'; InstanceId = $gpuId; Present = $true; Status = 'OK'; Problem = 0; Inf = 'oem39.inf'; Version = '32.0.101.5768'; Date = '2024-07-12' })
@@ -240,7 +259,12 @@ $pwshExe = (Get-Process -Id $PID).Path
 Test-That 'DriverDoctor.ps1 exits 0' { $LASTEXITCODE -eq 0 }
 Test-That 'report.html and findings.json written' { (Test-Path (Join-Path $out 'report.html')) -and (Test-Path (Join-Path $out 'findings.json')) }
 Test-That 'findings.json verdict round-trips' { (Get-Content -Raw (Join-Path $out 'findings.json') | ConvertFrom-Json).Verdict.State -eq 'NotDetected-GpuFault' }
-& $pwshExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'DriverDoctor.ps1') -SnapshotPath (Join-Path $fixtures 'envy-screenshots.snapshot.json') -Mode Repair -OutputPath $out -NoOpen 2>$null | Out-Null
+# The refusal is written to stderr. In 5.1, 'Stop' turns the first native stderr line into a
+# terminating NativeCommandError, so relax it around this one call (see Invoke-DDNative).
+$eap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try { & $pwshExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'DriverDoctor.ps1') -SnapshotPath (Join-Path $fixtures 'envy-screenshots.snapshot.json') -Mode Repair -OutputPath $out -NoOpen 2>$null | Out-Null }
+finally { $ErrorActionPreference = $eap }
 Test-That 'Repair refuses to run on a snapshot' { $LASTEXITCODE -ne 0 }
 
 Write-Host ''

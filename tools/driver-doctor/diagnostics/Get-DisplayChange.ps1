@@ -98,6 +98,17 @@ function Get-DCBootTypeText {
     return (ConvertTo-DCLine $Message)
 }
 
+function Get-DCEventDevice {
+    # The device an event is ABOUT, never a referenced one. Event 442 also carries
+    # "Last Device Instance Id=<other device>"; matching the whole text would credit that
+    # other device with the event. English text: "Device [settings for ]<id> ...".
+    # Otherwise (localized): the first sentence only, before the flattened key fields.
+    param([string]$Text)
+    if (-not $Text) { return '' }
+    if ($Text -match '^Device (?:settings for )?(\S+)') { return $Matches[1] }
+    return (($Text -split ' \| ')[0])
+}
+
 function Get-DCObservations {
     # Facts only, each with its source. Interpretation is left to the reader.
     param($State)
@@ -144,15 +155,22 @@ function Get-DCObservations {
     if ($State.Bios) { $out.Add(("BIOS now: {0}, release date {1} [VERIFIED]" -f $State.Bios.Version, $State.Bios.ReleaseDate)) }
 
     $pnp = @($State.Timeline | Where-Object { $_.Source -eq 'Kernel-PnP' } | Sort-Object Time)
-    $last411 = @($pnp | Where-Object { $_.Id -eq 411 -and $_.Text -match $b.GpuId }) | Select-Object -Last 1
+    $last411 = @($pnp | Where-Object { $_.Id -eq 411 -and (Get-DCEventDevice $_.Text) -match $b.GpuId }) | Select-Object -Last 1
     if (-not $State.PnpRead) { $out.Add('Kernel-PnP configuration log: NOT READ (see collection errors); no event-based conclusions below.') }
     elseif ($last411) { $out.Add(("Last GPU start failure (411): {0:yyyy-MM-dd HH:mm:ss} [VERIFIED]" -f $last411.Time)) }
     else { $out.Add('No GPU start failure (411) since -Since in the Kernel-PnP log [VERIFIED].') }
-    $lost = @($pnp | Where-Object { $_.Id -eq 442 -and $_.Text -match $b.PanelId }) | Select-Object -Last 1
-    if ($lost) { $out.Add(("Last panel migration loss (442 naming {0}): {1:yyyy-MM-dd HH:mm:ss} [VERIFIED]" -f $b.PanelId, $lost.Time)) }
-    $back = @($pnp | Where-Object { (@(400, 410) -contains $_.Id) -and $_.Text -match $b.PanelId -and (-not $lost -or $_.Time -gt $lost.Time) }) | Select-Object -First 1
-    if ($back) { $out.Add(("First panel configure/start event after that: {0:yyyy-MM-dd HH:mm:ss} (event {1}) [VERIFIED]" -f $back.Time, $back.Id)) }
-    $gpuInstalls = @($pnp | Where-Object { $_.Id -eq 400 -and $_.Text -match $b.GpuId })
+    # 442 is matched on the device it is about. A 442 for another monitor that merely names the
+    # panel as "Last Device Instance Id" is not a panel event.
+    $lost = @($pnp | Where-Object { $_.Id -eq 442 -and (Get-DCEventDevice $_.Text) -match $b.PanelId }) | Select-Object -Last 1
+    if ($lost) { $out.Add(("Last settings-migration event (442) for the panel device itself ({0}): {1:yyyy-MM-dd HH:mm:ss} [VERIFIED]" -f (Get-DCEventDevice $lost.Text), $lost.Time)) }
+    # -ge: Windows logs the 442 and the panel's 400/410 in the same second.
+    $back = @($pnp | Where-Object { (@(400, 410) -contains $_.Id) -and (Get-DCEventDevice $_.Text) -match $b.PanelId -and (-not $lost -or $_.Time -ge $lost.Time) }) | Select-Object -First 1
+    if ($back) {
+        $after = 'since -Since'
+        if ($lost) { $after = 'at or after that 442' }
+        $out.Add(("First panel configure/start event {0}: {1:yyyy-MM-dd HH:mm:ss} (event {2}, {3}) [VERIFIED]" -f $after, $back.Time, $back.Id, (Get-DCEventDevice $back.Text)))
+    }
+    $gpuInstalls = @($pnp | Where-Object { $_.Id -eq 400 -and (Get-DCEventDevice $_.Text) -match $b.GpuId })
     foreach ($e in $gpuInstalls) { $out.Add(("GPU driver configured (400) at {0:yyyy-MM-dd HH:mm:ss}: {1}" -f $e.Time, $e.Text)) }
 
     if ($State.Os) {
