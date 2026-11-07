@@ -10,6 +10,8 @@
 #   - The computer is never restarted without -AllowRestart and a confirmation.
 
 function New-DDResult {
+    # Builds an in-memory result object only; "New" is not a system change.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
     param($Action, [string]$Result, [string]$Detail)
     return [pscustomobject]@{ Type = $Action.Type; Target = $Action.Target; Result = $Result; Detail = $Detail }
 }
@@ -26,6 +28,7 @@ function Invoke-DDNative {
 
 function New-DDRestorePoint {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
+    [OutputType([bool])]
     param([string]$Description)
     if (-not $PSCmdlet.ShouldProcess('System', "Create restore point '$Description'")) { return $false }
     try {
@@ -204,9 +207,10 @@ function Invoke-DDRepair {
         [object[]]$Plan,
         $Snapshot,
         [string]$WorkDir,
-        [string]$HPIAPath,
-        [switch]$AllowRestart
+        [string]$HPIAPath
     )
+    # No -AllowRestart here: RestartComputer steps are skipped below. The only restart path is
+    # Invoke-DDRestartComputer, which DriverDoctor.ps1 calls last, gated by -AllowRestart + a confirmation.
     $results = New-Object System.Collections.Generic.List[object]
     $changing = @($Plan | Where-Object { $_.Type -notin 'Manual', 'RestartComputer' })
     if ($changing.Count -eq 0) {

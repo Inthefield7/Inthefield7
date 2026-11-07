@@ -401,6 +401,11 @@ function Get-DDHPIAAnalysis {
 }
 
 function Get-DDSnapshot {
+    # These three are read inside the collector script blocks (& $Script sees this scope);
+    # PSReviewUnusedParameter does not follow script blocks.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Days')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'HPIAPath')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'WorkDir')]
     [CmdletBinding()]
     param(
         [int]$Days = 180,

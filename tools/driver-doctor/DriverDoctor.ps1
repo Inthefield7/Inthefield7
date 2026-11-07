@@ -109,7 +109,7 @@ try {
     if ($Mode -eq 'Repair') {
         . (Join-Path $libDir 'DD.Repair.ps1')
         $repairStart = (Get-Date).ToUniversalTime()
-        $repairResults = @(Invoke-DDRepair -Plan $plan -Snapshot $snapshot -WorkDir $OutputPath -HPIAPath $HPIAPath -AllowRestart:$AllowRestart)
+        $repairResults = @(Invoke-DDRepair -Plan $plan -Snapshot $snapshot -WorkDir $OutputPath -HPIAPath $HPIAPath)
         $applied = @($repairResults | Where-Object { $_.Result -like 'Applied*' }).Count
         if ($applied -gt 0 -and -not $WhatIfPreference) {
             Write-Host "`nVerifying: re-collecting state after repair..." -ForegroundColor Cyan
