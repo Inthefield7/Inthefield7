@@ -185,6 +185,40 @@ Test-That 'no HPIA firmware install without -IncludeFirmware' { @($pj | Where-Ob
 $pj2 = @(Get-DDRepairPlan -Findings $j.Findings -IncludeFirmware)
 Test-That 'with -IncludeFirmware the HPIA step covers BIOS/Firmware' { @($pj2 | Where-Object { $_.Type -eq 'HPIAInstall' -and $_.Target -eq 'Drivers,BIOS,Firmware' }).Count -eq 1 }
 
+Write-Host 'Scenario S4: SEC-004 firmware power gate fails closed, and covers Windows Update' -ForegroundColor Cyan
+$bat = { param($c, $st) [pscustomobject]@{ EstimatedChargeRemaining = $c; BatteryStatus = $st } }
+$ac = @([pscustomobject]@{ PowerOnline = $true })
+Test-That 'gate: battery query failed -> refused' { $g = Get-DDFirmwareGate -Batteries @() -BatteryStatus @() -PCSystemType 1 -QueryFailed $true; -not $g[0] -and $g[1] -match 'could not be read' }
+Test-That 'gate: no battery on a mobile or unknown PC -> refused' { -not (Get-DDFirmwareGate -Batteries @() -BatteryStatus @() -PCSystemType 2 -QueryFailed $false)[0] -and -not (Get-DDFirmwareGate -Batteries @() -BatteryStatus @() -PCSystemType $null -QueryFailed $false)[0] -and -not (Get-DDFirmwareGate -Batteries @() -BatteryStatus @() -PCSystemType 8 -QueryFailed $false)[0] }
+Test-That 'gate: no battery on a confirmed desktop -> allowed' { (Get-DDFirmwareGate -Batteries @() -BatteryStatus @() -PCSystemType 1 -QueryFailed $false)[0] }
+Test-That 'gate: on AC at 80% -> allowed' { (Get-DDFirmwareGate -Batteries @((& $bat 80 2)) -BatteryStatus $ac -PCSystemType 2 -QueryFailed $false)[0] }
+Test-That 'gate: on battery (no AC) -> refused' { $g = Get-DDFirmwareGate -Batteries @((& $bat 80 1)) -BatteryStatus @() -PCSystemType 2 -QueryFailed $false; -not $g[0] -and $g[1] -match 'AC adapter' }
+Test-That 'gate: Win32_Battery charging status counts as AC when BatteryStatus is empty' { (Get-DDFirmwareGate -Batteries @((& $bat 80 6)) -BatteryStatus @() -PCSystemType 2 -QueryFailed $false)[0] }
+Test-That 'gate: on AC at 30% -> refused' { $g = Get-DDFirmwareGate -Batteries @((& $bat 30 2)) -BatteryStatus $ac -PCSystemType 2 -QueryFailed $false; -not $g[0] -and $g[1] -match '30%' }
+Test-That 'gate: unknown charge -> refused' { $g = Get-DDFirmwareGate -Batteries @((& $bat $null 2)) -BatteryStatus $ac -PCSystemType 2 -QueryFailed $false; -not $g[0] -and $g[1] -match 'unknown' }
+Test-That 'gate: two batteries, the lower charge decides (either order)' { -not (Get-DDFirmwareGate -Batteries @((& $bat 80 2), (& $bat 40 2)) -BatteryStatus $ac -PCSystemType 2 -QueryFailed $false)[0] -and -not (Get-DDFirmwareGate -Batteries @((& $bat 40 2), (& $bat 80 2)) -BatteryStatus $ac -PCSystemType 2 -QueryFailed $false)[0] }
+Test-That 'firmware detection: class in any case, or BIOS/UEFI/firmware/capsule in the title' {
+    (Test-DDFirmwareUpdate -DriverClass 'firmware' -Title 'x') -and (Test-DDFirmwareUpdate -DriverClass 'Firmware' -Title 'x') -and
+    (Test-DDFirmwareUpdate -DriverClass 'System' -Title 'HP Inc. - Firmware - 1.2.3') -and (Test-DDFirmwareUpdate -DriverClass '' -Title 'System BIOS update 01.02') -and
+    -not (Test-DDFirmwareUpdate -DriverClass 'Display' -Title 'Intel Corporation - Display - 32.0.101.9999') -and -not (Test-DDFirmwareUpdate -DriverClass 'Net' -Title 'BIOSTAR LAN driver')
+}
+$s = Get-Base
+$s.WindowsUpdate = [pscustomobject]@{ Searched = $true; Error = $null; Updates = @([pscustomobject]@{ UpdateId = 'fw-1'; Title = 'HP Inc. - Firmware - 01.05.00'; DriverClass = 'firmware'; DriverModel = 'System Firmware'; DriverProvider = 'HP Inc.'; DriverVerDate = '2026-09-01'; HardwareId = 'UEFI\RES_{00000000-0000-0000-0000-000000000001}' }) }
+$wf = Invoke-DDAnalysis -Snapshot $s
+Test-That 'WU firmware with a lowercase class is held back without -IncludeFirmware' { @(Get-DDRepairPlan -Findings $wf.Findings | Where-Object { $_.Type -eq 'InstallWindowsUpdate' -and $_.Target -eq 'fw-1' }).Count -eq 0 }
+Test-That 'WU firmware is planned with -IncludeFirmware' { @(Get-DDRepairPlan -Findings $wf.Findings -IncludeFirmware | Where-Object { $_.Type -eq 'InstallWindowsUpdate' -and $_.Target -eq 'fw-1' }).Count -eq 1 }
+# Repair step itself (no system access: the gate is stubbed and -WhatIf stops before Windows Update).
+. (Join-Path $root 'lib\DD.Repair.ps1')
+function Test-DDFirmwareSafe { $script:gateCalls++; return @($false, 'stub: on battery') }
+$script:gateCalls = 0
+$r1 = Invoke-DDInstallWindowsUpdate -Action (New-DDAction 'InstallWindowsUpdate' 'fw-1' 'x' $true) -Title 'HP Inc. - Firmware - 01.05.00' -WhatIf
+Test-That 'WU firmware install is refused by the power gate before it asks' { $r1.Result -eq 'Skipped' -and $r1.Detail -match 'Firmware safety gate: stub' -and $script:gateCalls -eq 1 }
+$r2 = Invoke-DDInstallWindowsUpdate -Action (New-DDAction 'InstallWindowsUpdate' 'u-2' 'x' $false) -Title 'System BIOS update 01.02' -WhatIf
+Test-That 'WU firmware the plan did not mark is not installed' { $r2.Result -eq 'Skipped' -and $r2.Detail -match 'IncludeFirmware' }
+$script:gateCalls = 0
+$r3 = Invoke-DDInstallWindowsUpdate -Action (New-DDAction 'InstallWindowsUpdate' 'u-1' 'x' $false) -Title 'Intel Corporation - Display - 32.0.101.9999' -WhatIf
+Test-That 'WU driver (not firmware) skips the gate and still asks first' { $r3.Result -eq 'Declined' -and $script:gateCalls -eq 0 }
+
 Write-Host 'Scenario K: Windows Update offer connected to a faulted device' -ForegroundColor Cyan
 $s = Get-Base
 $s.WindowsUpdate = [pscustomobject]@{ Searched = $true; Error = $null; Updates = @([pscustomobject]@{ UpdateId = 'u-1'; Title = 'Intel Corporation - Display - 32.0.101.9999'; DriverClass = 'Display'; DriverModel = 'Intel(R) Graphics'; DriverProvider = 'Intel Corporation'; DriverVerDate = '2026-09-01'; HardwareId = 'PCI\VEN_8086&DEV_7D45&SUBSYS_8C66103C' }) }

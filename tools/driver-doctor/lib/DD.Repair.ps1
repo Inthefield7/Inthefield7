@@ -132,11 +132,25 @@ function Invoke-DDSetBrightness {
 function Invoke-DDInstallWindowsUpdate {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
     param($Action, [string]$Title)
+    # SEC-004: firmware from Windows Update gets the same power gate as firmware from HPIA. A plan step
+    # marked as firmware only exists with -IncludeFirmware (Get-DDRepairPlan holds it back otherwise).
+    # Firmware the plan did not mark (by title now, by Windows Update's own data after the search) is
+    # not installed at all, so the gate cannot be bypassed by a misclassified offer.
+    $unmarked = 'Windows Update lists this update as firmware, but the plan did not mark it as firmware. Firmware needs -IncludeFirmware; not installed.'
+    $isFirmware = [bool]$Action.RequiresFirmwareConsent
+    if (-not $isFirmware -and (Test-DDFirmwareUpdate -Title $Title)) { return (New-DDResult $Action 'Skipped' $unmarked) }
+    if ($isFirmware) {
+        $gate = Test-DDFirmwareSafe
+        if (-not $gate[0]) { return (New-DDResult $Action 'Skipped' "Firmware safety gate: $($gate[1])") }
+        Write-DDBitLockerWarning
+    }
     if (-not $PSCmdlet.ShouldProcess($Title, 'Download and install from Windows Update')) { return (New-DDResult $Action 'Declined' '') }
     try {
         $session = New-Object -ComObject Microsoft.Update.Session
         $search = $session.CreateUpdateSearcher().Search("UpdateID='$($Action.Target)'")
         if ($search.Updates.Count -eq 0) { return (New-DDResult $Action 'Skipped' 'No longer offered by Windows Update.') }
+        $liveFirmware = @($search.Updates | Where-Object { Test-DDFirmwareUpdate -DriverClass ([string]$_.DriverClass) -Title ([string]$_.Title) }).Count -gt 0
+        if ($liveFirmware -and -not $isFirmware) { return (New-DDResult $Action 'Skipped' $unmarked) }
         $coll = New-Object -ComObject Microsoft.Update.UpdateColl
         foreach ($u in $search.Updates) { if (-not $u.EulaAccepted) { $u.AcceptEula() }; [void]$coll.Add($u) }
         $dl = $session.CreateUpdateDownloader(); $dl.Updates = $coll; [void]$dl.Download()
@@ -152,17 +166,23 @@ function Invoke-DDInstallWindowsUpdate {
 
 function Test-DDFirmwareSafe {
     # Conservative gate for BIOS/firmware installs (this tool's policy): AC connected and battery >= 50%.
-    $b = @(Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue)
-    if ($b.Count -eq 0) { return @($true, 'No battery reported (desktop or battery not detected).') }
-    $online = @(Get-CimInstance -Namespace root/wmi -ClassName BatteryStatus -ErrorAction SilentlyContinue | Where-Object { $_.PowerOnline }).Count -gt 0
-    if (-not $online) {
-        # Fallback: Win32_Battery 2 = on AC, 3 = fully charged, 6-9 = charging.
-        $online = @($b | Where-Object { $_.BatteryStatus -in 2, 3, 6, 7, 8, 9 }).Count -gt 0
+    # Collects the facts only; the decision (fail closed) is Get-DDFirmwareGate in DD.Analysis.ps1.
+    $failed = $false
+    $b = @()
+    try { $b = @(Get-CimInstance Win32_Battery -ErrorAction Stop) } catch { $failed = $true }
+    $status = @(Get-CimInstance -Namespace root/wmi -ClassName BatteryStatus -ErrorAction SilentlyContinue)
+    $type = $null
+    try { $type = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).PCSystemType } catch { Write-Verbose "PCSystemType unavailable: $($_.Exception.Message)" }
+    return (Get-DDFirmwareGate -Batteries $b -BatteryStatus $status -PCSystemType $type -QueryFailed $failed)
+}
+
+function Write-DDBitLockerWarning {
+    $bl = $null
+    try { $bl = Get-CimInstance -Namespace root/cimv2/Security/MicrosoftVolumeEncryption -ClassName Win32_EncryptableVolume -Filter "DriveLetter='$env:SystemDrive'" -ErrorAction Stop }
+    catch { Write-Verbose "BitLocker state unavailable: $($_.Exception.Message)" }
+    if ($bl -and $bl.ProtectionStatus -eq 1) {
+        Write-Warning 'BitLocker is ON for the system drive. Make sure you have the recovery key (https://account.microsoft.com/devices/recoverykey) before a BIOS update.'
     }
-    $charge = ($b | Measure-Object -Property EstimatedChargeRemaining -Minimum).Minimum
-    if (-not $online) { return @($false, 'AC adapter is not connected.') }
-    if ($charge -lt 50) { return @($false, "Battery is at $charge%; charge to 50% or more first.") }
-    return @($true, "On AC, battery $charge%.")
 }
 
 function Invoke-DDHPIAInstall {
@@ -178,12 +198,7 @@ function Invoke-DDHPIAInstall {
     if ($categories -match 'BIOS|Firmware') {
         $gate = Test-DDFirmwareSafe
         if (-not $gate[0]) { return (New-DDResult $Action 'Skipped' "Firmware safety gate: $($gate[1])") }
-        $bl = $null
-        try { $bl = Get-CimInstance -Namespace root/cimv2/Security/MicrosoftVolumeEncryption -ClassName Win32_EncryptableVolume -Filter "DriveLetter='$env:SystemDrive'" -ErrorAction Stop }
-        catch { Write-Verbose "BitLocker state unavailable: $($_.Exception.Message)" }
-        if ($bl -and $bl.ProtectionStatus -eq 1) {
-            Write-Warning 'BitLocker is ON for the system drive. Make sure you have the recovery key (https://account.microsoft.com/devices/recoverykey) before a BIOS update.'
-        }
+        Write-DDBitLockerWarning
     }
     if (-not $PSCmdlet.ShouldProcess("HP Image Assistant ($categories)", 'Download and install HP-recommended updates for this model')) { return (New-DDResult $Action 'Declined' '') }
     $report = Join-Path $WorkDir 'hpia-install'

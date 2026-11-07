@@ -464,6 +464,46 @@ function New-DDFinding {
     }
 }
 
+function Test-DDFirmwareUpdate {
+    # SEC-004: a Windows Update offer counts as firmware when its driver class says so (any case, e.g.
+    # 'Firmware', 'firmware') or its title names BIOS, UEFI, firmware or a capsule. False positives only
+    # add the power gate and the -IncludeFirmware consent; false negatives would skip them.
+    param([string]$DriverClass, [string]$Title)
+    if ($DriverClass -match '(?i)firmware') { return $true }
+    return ($Title -match '(?i)\b(BIOS|UEFI|firmware|capsule)\b')
+}
+
+function Get-DDFirmwareGate {
+    # SEC-004: pure decision for the firmware power gate (AC connected and battery >= 50%). Fails closed:
+    # an unreadable battery state, an unknown charge, or "no battery" on a PC not confirmed as a desktop
+    # all refuse. Inputs: Win32_Battery rows, root/wmi BatteryStatus rows, Win32_ComputerSystem
+    # PCSystemType, and whether the Win32_Battery query itself failed.
+    # Returns @($allowed, $reason).
+    param([object[]]$Batteries, [object[]]$BatteryStatus, $PCSystemType, [bool]$QueryFailed)
+    if ($QueryFailed) { return @($false, 'Battery state could not be read, so AC power and charge are unknown.') }
+    $b = @(Get-DDArray $Batteries | Where-Object { $null -ne $_ })
+    if ($b.Count -eq 0) {
+        # PCSystemType: 1 Desktop, 3 Workstation, 4 Enterprise server, 5 SOHO server, 7 Performance server.
+        $t = ConvertTo-DDInt $PCSystemType
+        if ($t -in 1, 3, 4, 5, 7) { return @($true, "No battery; this PC reports itself as a desktop or server (PCSystemType $t).") }
+        return @($false, "No battery reported, and this PC is not confirmed as a desktop (PCSystemType $(if ($null -eq $t) { 'unknown' } else { $t })). A laptop whose battery is not detected must not flash firmware.")
+    }
+    $online = @(Get-DDArray $BatteryStatus | Where-Object { $_ -and $_.PowerOnline -eq $true }).Count -gt 0
+    if (-not $online) {
+        # Fallback: Win32_Battery 2 = on AC, 3 = fully charged, 6-9 = charging.
+        $online = @($b | Where-Object { (ConvertTo-DDInt $_.BatteryStatus) -in 2, 3, 6, 7, 8, 9 }).Count -gt 0
+    }
+    $charge = $null
+    foreach ($x in $b) {
+        $c = ConvertTo-DDInt $x.EstimatedChargeRemaining
+        if ($null -eq $c) { return @($false, 'Battery charge is unknown.') }
+        if ($null -eq $charge -or $c -lt $charge) { $charge = $c }
+    }
+    if (-not $online) { return @($false, 'AC adapter is not connected.') }
+    if ($charge -lt 50) { return @($false, "Battery is at $charge%; charge to 50% or more first.") }
+    return @($true, "On AC, battery $charge%.")
+}
+
 function New-DDAction {
     # Builds an in-memory object only; "New" is not a system change.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
@@ -488,7 +528,7 @@ function Get-DDDriverUpdateActions {
         $match = $false
         if ($u.HardwareId -and ($hwIds -contains ([string]$u.HardwareId).ToUpperInvariant())) { $match = $true }
         if ($match) {
-            $isFw = ([string]$u.DriverClass -eq 'Firmware')
+            $isFw = Test-DDFirmwareUpdate -DriverClass $u.DriverClass -Title $u.Title
             $actions.Add((New-DDAction 'InstallWindowsUpdate' ([string]$u.UpdateId) "Windows Update offers: $($u.Title)" $isFw))
         }
     }
@@ -916,7 +956,7 @@ function Invoke-DDAnalysis {
         if ($hit) { $ev += "Connection: same hardware id as $(Get-DDDeviceLabel $hit), which has a current fault." }
         $findings.Add((New-DDFinding -Id "WU-UPDATE:$($u.UpdateId)" -Severity $sev -Category 'Updates' -Title "Driver update available: $($u.Title)" -Evidence $ev `
                     -Interpretation 'Offered by Windows Update for this PC (Microsoft-signed, targeted by the manufacturer).' -Confidence 'VERIFIED' `
-                    -Recommendation 'Install (repair mode asks per update).' -Actions @(New-DDAction 'InstallWindowsUpdate' ([string]$u.UpdateId) "Install: $($u.Title)" ($cls -eq 'Firmware'))))
+                    -Recommendation 'Install (repair mode asks per update).' -Actions @(New-DDAction 'InstallWindowsUpdate' ([string]$u.UpdateId) "Install: $($u.Title)" (Test-DDFirmwareUpdate -DriverClass $cls -Title $u.Title))))
     }
 
     # 11. Driver update policy ---------------------------------------------------
