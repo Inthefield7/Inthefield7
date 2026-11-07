@@ -8,6 +8,7 @@ Windows driver and firmware health tool. It was built for an HP ENVY x360 16 (20
 ## Quick start
 
 1. Download this repo as a ZIP, extract it, and open `tools\driver-doctor`.
+   The tool runs as administrator, so keep it where only administrators can change it: copy the `driver-doctor` folder to `C:\Program Files\DriverDoctor` (Windows asks for administrator approval) and run it from there. Run from `Downloads` or the Desktop, any program running as you could edit the scripts between your double-click and the UAC prompt, and the edited code would run as administrator.
 2. Double-click **`Run-Diagnose.cmd`** and accept the UAC prompt. The report opens from `Desktop\DriverDoctor\<timestamp>\report.html`.
 3. Read the **Built-in display** section first. When you are ready, double-click **`Run-Repair.cmd`**. To see the plan without changing anything, run:
    ```powershell

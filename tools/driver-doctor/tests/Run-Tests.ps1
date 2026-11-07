@@ -310,6 +310,46 @@ if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
     }
 }
 
+Write-Host 'Scenario S3: SEC-003 launchers pass their own path safely' -ForegroundColor Cyan
+foreach ($ln in 'Run-Diagnose.cmd', 'Run-Repair.cmd') {
+    $lt = [IO.File]::ReadAllText((Join-Path $root $ln))
+    Test-That "${ln}: path goes through DD_SELF, never inside PowerShell quotes" {
+        $lt.Contains('set "DD_SELF=%~f0"') -and $lt.Contains('Start-Process -FilePath $env:DD_SELF -Verb RunAs') -and -not $lt.Contains("'%~f0'")
+    }
+    Test-That "${ln}: CRLF line endings and ASCII only" { $lt -notmatch '(?<!\r)\n' -and $lt -notmatch '[^\x00-\x7F]' }
+}
+if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
+    # Runs the real elevation block with two swaps: the admin check always fails (so the block runs)
+    # and Start-Process becomes a file write of the path PowerShell received. Each swap must match
+    # exactly once, so a changed launcher fails here instead of passing untested.
+    $ldir = Join-Path ([IO.Path]::GetTempPath()) ("dd-sec003 it's `$(x) & (1);" + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    New-Item -ItemType Directory -Path $ldir | Out-Null
+    try {
+        $lt = [IO.File]::ReadAllText((Join-Path $root 'Run-Repair.cmd'))
+        $swaps = @(
+            @('fltmc >nul 2>&1 ||', 'cmd /c exit 1 ||'),
+            @('Start-Process -FilePath $env:DD_SELF -Verb RunAs', '[IO.File]::WriteAllText($env:DD_OUT, $env:DD_SELF)')
+        )
+        $swapOk = $true
+        foreach ($sw in $swaps) {
+            if (([regex]::Matches($lt, [regex]::Escape($sw[0]))).Count -ne 1) { $swapOk = $false }
+            $lt = $lt.Replace($sw[0], $sw[1])
+        }
+        $lpath = Join-Path $ldir 'Run-Repair.cmd'
+        [IO.File]::WriteAllText($lpath, $lt, (New-Object System.Text.ASCIIEncoding))
+        $env:DD_OUT = Join-Path $ldir 'received.txt'
+        $p = Start-Process -FilePath 'cmd.exe' -ArgumentList ('/d /s /c ""' + $lpath + '""') -Wait -PassThru -WindowStyle Hidden
+        $got = if (Test-Path -LiteralPath $env:DD_OUT) { [IO.File]::ReadAllText($env:DD_OUT) } else { '<nothing>' }
+        Test-That "elevation hands PowerShell the exact path, even with ' `$ & ( ) ; in the folder name (got: $got)" {
+            $swapOk -and $p.ExitCode -eq 0 -and [string]::Equals($got, $lpath, 'OrdinalIgnoreCase')
+        }
+    }
+    finally {
+        Remove-Item Env:\DD_OUT -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $ldir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 Write-Host 'Scenario K: Windows Update offer connected to a faulted device' -ForegroundColor Cyan
 $s = Get-Base
 $s.WindowsUpdate = [pscustomobject]@{ Searched = $true; Error = $null; Updates = @([pscustomobject]@{ UpdateId = 'u-1'; Title = 'Intel Corporation - Display - 32.0.101.9999'; DriverClass = 'Display'; DriverModel = 'Intel(R) Graphics'; DriverProvider = 'Intel Corporation'; DriverVerDate = '2026-09-01'; HardwareId = 'PCI\VEN_8086&DEV_7D45&SUBSYS_8C66103C' }) }
