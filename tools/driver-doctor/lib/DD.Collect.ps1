@@ -410,6 +410,25 @@ function Test-DDAdminOnlyPath {
     return ''
 }
 
+function Test-DDInstallFolder {
+    # NEW-11: '' when the tool's own folder may run as administrator: it lies under Program Files, the
+    # chain from that root down to the folder is real and administrators-only (Test-DDAdminOnlyPath), and
+    # so is every file and folder inside it. Otherwise the reason. This enforces the README rule at run
+    # time. It cannot defend a folder that was already tampered with (this check would have been edited
+    # too); it stops an elevated run in a folder where that could begin, such as Downloads.
+    param([string]$ToolRoot)
+    $roots = @([Environment]::GetFolderPath('ProgramFiles'), [Environment]::GetFolderPath('ProgramFilesX86') | Where-Object { $_ })
+    $under = @($roots | Where-Object { Test-DDUnderFolder -Path $ToolRoot -Roots @($_) })[0]
+    if (-not $under) { return "$ToolRoot is not under Program Files" }
+    $why = Test-DDAdminOnlyPath -Path $ToolRoot -Root $under
+    if ($why) { return $why }
+    foreach ($f in @(Get-ChildItem -LiteralPath $ToolRoot -Recurse -Force)) {
+        if ($f.Attributes -band [IO.FileAttributes]::ReparsePoint) { return "$($f.FullName) is a link or junction" }
+        if (-not (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $f.FullName).Sddl -RequireTrustedOwner)) { return "$($f.FullName) can be changed by non-administrators" }
+    }
+    return ''
+}
+
 function Find-DDHPIA {
     # SEC-001: run HPIA only from Program Files (only administrators can change it), whether found there
     # or passed with -HPIAPath, and only with a valid HP Inc. signature. C:\HPIA, C:\SWSetup\SP* and an

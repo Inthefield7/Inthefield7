@@ -8,7 +8,7 @@ Windows driver and firmware health tool. It was built for an HP ENVY x360 16 (20
 ## Quick start
 
 1. Download this repo as a ZIP, extract it, and open `tools\driver-doctor`.
-   The tool runs as administrator, so keep it where only administrators can change it: copy the `driver-doctor` folder to `C:\Program Files\DriverDoctor` (Windows asks for administrator approval) and run it from there. Run from `Downloads` or the Desktop, any program running as you could edit the scripts between your double-click and the UAC prompt, and the edited code would run as administrator.
+   The tool runs as administrator, so keep it where only administrators can change it: copy the `driver-doctor` folder to `C:\Program Files\DriverDoctor` (Windows asks for administrator approval) and run it from there. Run from `Downloads` or the Desktop, any program running as you could edit the scripts between your double-click and the UAC prompt, and the edited code would run as administrator. The tool enforces this: an administrator run from any folder that is not under Program Files and administrators-only down to every file stops with a message naming the reason, before it writes anything (developers running from a checkout pass `-SkipInstallFolderCheck`; the launchers never do).
 2. Double-click **`Run-Diagnose.cmd`** and accept the UAC prompt. The console prints the report path, a new `%ProgramData%\DriverDoctor\<timestamp>` folder that only administrators can change and that you can read. Open `report.html` from File Explorer: an administrator run never opens it itself, because the browser would then run as administrator, and the choice of browser comes from a registry key any program running as you could change. (Run without administrator rights, the report goes to `Desktop\DriverDoctor\<timestamp>` and opens by itself.)
 3. Read the **Built-in display** section first. When you are ready, double-click **`Run-Repair.cmd`**. To see the plan without changing anything, run:
    ```powershell
@@ -83,6 +83,8 @@ If the screen stays black after a GPU restart: wait 30 seconds, then hold the po
 -AllowRestart           allow Repair to schedule a restart (still asks; a restart that applies staged firmware also needs -IncludeFirmware and AC power)
 -WhatIf                 show the plan, change nothing
 -SnapshotPath <json>    re-analyze a saved snapshot offline (any OS, PowerShell 7)
+-SkipInstallFolderCheck development only: run as administrator from a checkout that is not administrators-only
+                        (the launchers never pass it; see Quick start)
 -OutputPath <dir>       report folder
 ```
 

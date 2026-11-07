@@ -59,20 +59,103 @@ param(
     # Analyze a saved snapshot instead of this computer (no system access at all).
     [string]$SnapshotPath,
 
-    [switch]$NoOpen
+    [switch]$NoOpen,
+
+    # Development only: run as administrator from a folder that is not administrators-only (a checkout).
+    # The launchers never pass it. See README, Quick start.
+    [switch]$SkipInstallFolderCheck
 )
+
+# ---------------------------------------------------------------------------
+# NEW-11 bootstrap. These two functions run BEFORE any lib\*.ps1 is dot-sourced while elevated, so
+# they depend on nothing in lib: code loaded from lib cannot vouch for the folder it was loaded from.
+# Test-DDBootstrapAdminOnlySddl mirrors Test-DDAdminOnlySddl -RequireTrustedOwner (DD.Analysis.ps1);
+# a test keeps the two in step. The check cannot defend a folder that was already tampered with (this
+# file would have been edited too); it refuses an elevated run in a folder where that could begin.
+# ---------------------------------------------------------------------------
+function Test-DDBootstrapAdminOnlySddl {
+    # True when the owner is SYSTEM, Administrators or TrustedInstaller and no one else holds a write,
+    # delete or permission-change right (CREATOR OWNER only as an inherit-only ACE; deny ACEs ignored).
+    param([string]$Sddl)
+    if (-not $Sddl) { return $false }
+    $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    $writeMask = 0x2 -bor 0x4 -bor 0x10 -bor 0x40 -bor 0x100 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x10000000 -bor 0x40000000 -bor 0x2000000
+    try { $sd = New-Object System.Security.AccessControl.RawSecurityDescriptor($Sddl) } catch { return $false }
+    if (-not $sd.Owner -or $null -eq $sd.DiscretionaryAcl) { return $false }
+    if ($trusted -notcontains $sd.Owner.Value) { return $false }
+    foreach ($ace in $sd.DiscretionaryAcl) {
+        if ($ace -isnot [System.Security.AccessControl.KnownAce]) { return $false }
+        if ([string]$ace.AceType -notin 'AccessAllowed', 'AccessAllowedObject', 'AccessAllowedCallback', 'AccessAllowedCallbackObject') { continue }
+        if (([int64]$ace.AccessMask -band $writeMask) -eq 0) { continue }
+        $sid = $ace.SecurityIdentifier.Value
+        if ($trusted -contains $sid) { continue }
+        if ($sid -eq 'S-1-3-0' -and ((([int]$ace.AceFlags) -band 0x08) -ne 0)) { continue }
+        return $false
+    }
+    return $true
+}
+
+function Test-DDInstallChain {
+    # '' when ToolRoot lies under Program Files and every folder from that root down to it, plus each
+    # of Files, is a real item (no reparse point) that only administrators can change, with a trusted
+    # owner. Otherwise the reason, naming the first weak link from the root down.
+    param([string]$ToolRoot, [string[]]$Files)
+    $roots = @([Environment]::GetFolderPath('ProgramFiles'), [Environment]::GetFolderPath('ProgramFilesX86') | Where-Object { $_ })
+    try { $full = [IO.Path]::GetFullPath($ToolRoot).TrimEnd('\') } catch { return "$ToolRoot could not be resolved" }
+    $under = $null
+    foreach ($r in $roots) {
+        $rf = [IO.Path]::GetFullPath($r).TrimEnd('\')
+        if (($full + '\').StartsWith($rf + '\', [StringComparison]::OrdinalIgnoreCase)) { $under = $rf; break }
+    }
+    if (-not $under) { return "$full is not under Program Files" }
+    $items = New-Object System.Collections.Generic.List[string]
+    $dir = $full
+    while ($dir) {
+        $items.Insert(0, $dir)
+        if ([string]::Equals($dir, $under, [StringComparison]::OrdinalIgnoreCase)) { break }
+        $dir = [IO.Path]::GetDirectoryName($dir)
+        if ($dir) { $dir = $dir.TrimEnd('\') }
+    }
+    foreach ($f in @($Files)) {
+        # The file's own folder (lib) is part of the chain too: a junction standing in for it must be caught.
+        $d = [IO.Path]::GetDirectoryName($f)
+        if ($d) { $d = $d.TrimEnd('\'); if (-not $items.Contains($d)) { $items.Add($d) } }
+        $items.Add($f)
+    }
+    foreach ($p in $items) {
+        try { $item = Get-Item -LiteralPath $p -Force -ErrorAction Stop } catch { return "$p could not be read: $($_.Exception.Message)" }
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return "$p is a link or junction" }
+        if (-not (Test-DDBootstrapAdminOnlySddl (Get-Acl -LiteralPath $p).Sddl)) { return "$p can be changed by non-administrators" }
+    }
+    return ''
+}
+
+# Dot-sourced (tests): stop here, functions only.
+if ($MyInvocation.InvocationName -eq '.') { return }
 
 $ErrorActionPreference = 'Stop'
 $libDir = Join-Path $PSScriptRoot 'lib'
+$onWindows = ($PSVersionTable.PSEdition -eq 'Desktop') -or ($IsWindows -eq $true)
+$elevated = $false
+if ($onWindows) { $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
+
+# NEW-11: the README rule, enforced before any lib code runs: an administrator run only from a folder
+# that only administrators can change, so a program running as the user cannot edit these scripts.
+if ($elevated -and -not $SkipInstallFolderCheck) {
+    $bootFiles = @($PSCommandPath) +
+    @(Get-ChildItem -LiteralPath $libDir -Filter '*.ps1' -File -Force | ForEach-Object { $_.FullName }) +
+    @(Join-Path $libDir 'DisplayConfig.cs') +
+    @(@('Run-Diagnose.cmd', 'Run-Repair.cmd') | ForEach-Object { Join-Path $PSScriptRoot $_ } | Where-Object { Test-Path -LiteralPath $_ })
+    $why = Test-DDInstallChain -ToolRoot $PSScriptRoot -Files $bootFiles
+    if ($why) { throw "Driver Doctor runs as administrator only from a folder that only administrators can change, such as C:\Program Files\DriverDoctor (README, Quick start): $why. Copy the whole folder there and run it again. (-SkipInstallFolderCheck is for development from a checkout; the launchers never pass it.)" }
+}
+
 . (Join-Path $libDir 'DD.Analysis.ps1')
 . (Join-Path $libDir 'DD.Report.ps1')
 
-$onWindows = ($PSVersionTable.PSEdition -eq 'Desktop') -or ($IsWindows -eq $true)
 if ($Mode -eq 'Repair' -and $SnapshotPath) { throw 'Repair works on the live computer only; it cannot be combined with -SnapshotPath.' }
 if (-not $SnapshotPath -and -not $onWindows) { throw 'Live collection needs Windows. Use -SnapshotPath to analyze a saved snapshot.' }
 
-$elevated = $false
-if ($onWindows) { $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
 if ($elevated) {
     # NEW-2: as administrator, never write into a folder the user chose or controls (see
     # Get-DDElevatedOutputDir). Run without administrator rights to use -OutputPath.

@@ -20,7 +20,9 @@
 param(
     [datetime]$Since = '2026-08-20',
     [string]$OutputPath,
-    [string[]]$Match = @('DEV_7D45', 'CMN163B', 'UEFI\RES_', 'DISPLAY\', 'Default_Monitor', 'iigd')
+    [string[]]$Match = @('DEV_7D45', 'CMN163B', 'UEFI\RES_', 'DISPLAY\', 'Default_Monitor', 'iigd'),
+    # Development only: run as administrator from a folder that is not administrators-only (a checkout).
+    [switch]$SkipInstallFolderCheck
 )
 
 . (Join-Path (Split-Path $PSScriptRoot -Parent) 'lib\DD.Analysis.ps1')
@@ -226,6 +228,12 @@ if (-not $isAdmin) { $state.Errors.Add('Not elevated: some event logs may be inc
 # NEW-2: as administrator, never write to a path the user chose (its parent may be user-controlled).
 # Checked here, before the slow collection, so a wrong invocation fails at once.
 if ($isAdmin -and $OutputPath) { throw '-OutputPath is not accepted when running as administrator: the file goes to a new administrators-only folder under %ProgramData%\DriverDoctor (printed at the end). Run from a normal PowerShell window to choose the path.' }
+# NEW-11: the README rule, enforced: an administrator run only from a folder that only administrators can change.
+if ($isAdmin -and -not $SkipInstallFolderCheck) {
+    . (Join-Path (Split-Path $PSScriptRoot -Parent) 'lib\DD.Collect.ps1')
+    $why = Test-DDInstallFolder -ToolRoot (Split-Path $PSScriptRoot -Parent)
+    if ($why) { throw "This script runs as administrator only from a folder that only administrators can change, such as C:\Program Files\DriverDoctor (README, Quick start): $why. Copy the whole Driver Doctor folder there and run it again. (-SkipInstallFolderCheck is for development from a checkout.)" }
+}
 
 Invoke-DCStep 'System info' {
     $cs = Get-CimInstance Win32_ComputerSystem

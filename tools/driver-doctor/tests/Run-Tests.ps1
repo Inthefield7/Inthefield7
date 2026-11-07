@@ -318,6 +318,89 @@ if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
     }
 }
 
+Write-Host 'Scenario S10: NEW-11 administrator runs only from an administrators-only install folder' -ForegroundColor Cyan
+$n11dd = [IO.File]::ReadAllText((Join-Path $root 'DriverDoctor.ps1'))
+$n11dc = [IO.File]::ReadAllText((Join-Path $root 'diagnostics\Get-DisplayChange.ps1'))
+Test-That 'NEW-11: DriverDoctor checks its chain before the first lib\*.ps1 is dot-sourced, naming DisplayConfig.cs and both launchers' {
+    $chk = $n11dd.IndexOf('$why = Test-DDInstallChain -ToolRoot $PSScriptRoot -Files $bootFiles'); $first = $n11dd.IndexOf('. (Join-Path $libDir')
+    $chk -gt 0 -and $first -gt $chk -and $n11dd -match '(?s)if \(\$elevated -and -not \$SkipInstallFolderCheck\) \{.*?\$PSCommandPath.*?-Filter ''\*\.ps1''.*?''DisplayConfig\.cs''.*?''Run-Diagnose\.cmd'', ''Run-Repair\.cmd''.*?Test-DDInstallChain -ToolRoot \$PSScriptRoot -Files \$bootFiles.*?C:\\Program Files\\DriverDoctor' -and
+    $n11dd -notmatch 'Test-DDInstallFolder'
+}
+Test-That 'NEW-11: Get-DisplayChange checks its folder when elevated, before collecting' { $n11dc -match '(?s)if \(\$isAdmin -and -not \$SkipInstallFolderCheck\) \{\s*\r?\n\s*\. \(Join-Path \(Split-Path \$PSScriptRoot -Parent\) ''lib\\DD\.Collect\.ps1''\)\s*\r?\n\s*\$why = Test-DDInstallFolder -ToolRoot \(Split-Path \$PSScriptRoot -Parent\)\s*\r?\n\s*if \(\$why\) \{ throw .*?Invoke-DCStep ''System info''' }
+Test-That 'NEW-11: the launchers never pass -SkipInstallFolderCheck' { -not (([IO.File]::ReadAllText((Join-Path $root 'Run-Diagnose.cmd')) + [IO.File]::ReadAllText((Join-Path $root 'Run-Repair.cmd'))) -match 'SkipInstallFolderCheck') }
+if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
+    . (Join-Path $root 'lib\DD.Collect.ps1')
+    $n11tmp = Join-Path ([IO.Path]::GetTempPath()) ('dd-new11-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $n11tmp | Out-Null
+    # The bootstrap functions in DriverDoctor.ps1 (dot-sourcing stops at its guard): they depend on nothing in lib.
+    . (Join-Path $root 'DriverDoctor.ps1')
+    $n11bat = @($script:DDAdminOnlySddl, 'O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;OW)', 'O:S-1-5-21-1-2-3-1001D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;OW)',
+        'O:S-1-5-21-1-2-3-1001D:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)', 'O:S-1-5-21-1-2-3-1001D:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;0x1200a9;;;OW)',
+        'O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;OW)(A;OICI;0x1301bf;;;AU)', 'O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;0x4;;;BU)',
+        'O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;WD)', 'O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(D;;FA;;;WD)',
+        'O:SYD:PAI(A;OICIIO;GA;;;CO)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)', 'O:SYD:PAI(A;OICI;FA;;;CO)(A;OICI;FA;;;SY)', 'O:BAD:NO_ACCESS_CONTROL', '', 'garbage',
+        'O:SYG:SYD:PAI(A;OICIIO;GA;;;CO)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;CI;DCLCRPCR;;;BU)')
+    Test-That 'NEW-11: the bootstrap SDDL test agrees with Test-DDAdminOnlySddl -RequireTrustedOwner on every descriptor in the battery' {
+        $diff = @($n11bat | Where-Object { (Test-DDBootstrapAdminOnlySddl $_) -ne (Test-DDAdminOnlySddl $_ -RequireTrustedOwner) })
+        $yes = @($n11bat | Where-Object { Test-DDBootstrapAdminOnlySddl $_ }).Count
+        $diff.Count -eq 0 -and $yes -ge 3 -and $yes -le ($n11bat.Count - 5)
+    }
+    try {
+        Test-That 'NEW-11: a folder outside Program Files is refused (both implementations)' { ((Test-DDInstallFolder -ToolRoot $n11tmp) -match 'is not under Program Files') -and ((Test-DDInstallChain -ToolRoot $n11tmp -Files @()) -match 'is not under Program Files') }
+    }
+    finally { Remove-Item -LiteralPath $n11tmp -Recurse -Force -ErrorAction SilentlyContinue }
+    $n11elev = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($n11elev) {
+        $n11pf = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) ('dd-new11-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        $n11lnk = Join-Path $n11pf 'tests'
+        $n11liblnk = Join-Path $n11pf 'liblnk'
+        try {
+            New-DDSecureDirectory $n11pf; New-DDSecureDirectory (Join-Path $n11pf 'lib')
+            $n11main = Join-Path $n11pf 'DriverDoctor.ps1'; Set-Content -LiteralPath $n11main -Value 'x' -Encoding Ascii
+            $n11f = Join-Path $n11pf 'lib\DD.Collect.ps1'; Set-Content -LiteralPath $n11f -Value 'x' -Encoding Ascii
+            $n11cs = Join-Path $n11pf 'lib\DisplayConfig.cs'; Set-Content -LiteralPath $n11cs -Value 'x' -Encoding Ascii
+            $n11files = @($n11main, $n11f, $n11cs)
+            Test-That 'NEW-11: an administrators-only install under Program Files passes (both implementations)' { (Test-DDInstallFolder -ToolRoot $n11pf) -eq '' -and (Test-DDInstallChain -ToolRoot $n11pf -Files $n11files) -eq '' }
+            $n11acl = Get-Acl -LiteralPath $n11f
+            $n11acl.SetAccessRuleProtection($true, $false)
+            $n11acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('BUILTIN\Administrators', 'FullControl', 'Allow')))
+            $n11acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('BUILTIN\Users', 'Modify', 'Allow')))
+            Set-Acl -LiteralPath $n11f -AclObject $n11acl
+            Test-That 'NEW-11: one script users may rewrite is refused, naming it (both implementations)' { ((Test-DDInstallFolder -ToolRoot $n11pf) -match 'DD\.Collect\.ps1 can be changed by non-administrators') -and ((Test-DDInstallChain -ToolRoot $n11pf -Files $n11files) -match 'DD\.Collect\.ps1 can be changed by non-administrators') }
+            Remove-Item -LiteralPath $n11f -Force; Set-Content -LiteralPath $n11f -Value 'x' -Encoding Ascii
+            Test-That 'NEW-11: passes again once that file is administrators-only (both implementations)' { (Test-DDInstallFolder -ToolRoot $n11pf) -eq '' -and (Test-DDInstallChain -ToolRoot $n11pf -Files $n11files) -eq '' }
+            Test-That 'NEW-11: a missing DisplayConfig.cs is refused by the bootstrap' { (Test-DDInstallChain -ToolRoot $n11pf -Files @($n11main, (Join-Path $n11pf 'lib\Missing.cs'))) -match 'Missing\.cs could not be read' }
+            New-Item -ItemType Junction -Path $n11lnk -Value (Join-Path $n11pf 'lib') | Out-Null
+            New-Item -ItemType Junction -Path $n11liblnk -Value (Join-Path $n11pf 'lib') | Out-Null
+            Test-That 'NEW-11: a junction inside the install folder is refused' { (Test-DDInstallFolder -ToolRoot $n11pf) -match '(tests|liblnk) is a link or junction' }   # the sweep names whichever junction it meets first
+            Test-That 'NEW-11: the bootstrap refuses a junction standing in for lib' { (Test-DDInstallChain -ToolRoot $n11pf -Files @($n11main, (Join-Path $n11liblnk 'DD.Collect.ps1'))) -match 'liblnk is a link or junction' }
+            [IO.Directory]::Delete($n11lnk); [IO.Directory]::Delete($n11liblnk)
+            New-DDSecureDirectory -Path (Join-Path $n11pf 'weak') -Sddl 'D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;BU)'
+            Test-That 'NEW-11: a user-writable subfolder is refused' { (Test-DDInstallFolder -ToolRoot $n11pf) -match 'weak can be changed by non-administrators' }
+            [IO.Directory]::Delete((Join-Path $n11pf 'weak'))
+            # NEW-4 rule inside the install folder too: an item the user owns is refused even with an administrators-only DACL.
+            $n11owned = Join-Path $n11pf 'Owned'; New-DDSecureDirectory $n11owned
+            $n11ownAcl = Get-Acl -LiteralPath $n11owned; $n11ownAcl.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User); Set-Acl -LiteralPath $n11owned -AclObject $n11ownAcl
+            $n11ownFile = Join-Path $n11owned 'x.ps1'; Set-Content -LiteralPath $n11ownFile -Value 'x' -Encoding Ascii
+            Test-That 'NEW-11: a folder inside the install that the user owns is refused (both implementations)' { (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $n11owned).Sddl) -and ((Test-DDInstallFolder -ToolRoot $n11pf) -match 'Owned can be changed by non-administrators') -and ((Test-DDInstallChain -ToolRoot $n11pf -Files @($n11main, $n11ownFile)) -match 'Owned can be changed by non-administrators') }
+            # The chain above the tool counts: an administrators-only tool folder inside a user-writable parent is refused, naming the parent.
+            $n11weakParent = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) ('dd-new11w-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+            New-DDSecureDirectory -Path $n11weakParent -Sddl 'D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;BU)'
+            $n11inner = Join-Path $n11weakParent 'DriverDoctor'; New-DDSecureDirectory $n11inner; $n11innerMain = Join-Path $n11inner 'DriverDoctor.ps1'; Set-Content -LiteralPath $n11innerMain -Value 'x' -Encoding Ascii
+            Test-That 'NEW-11: an administrators-only tool folder under a user-writable parent is refused, naming the parent (both implementations)' { ((Test-DDInstallFolder -ToolRoot $n11inner) -match 'dd-new11w-[0-9a-f]+ can be changed by non-administrators') -and ((Test-DDInstallChain -ToolRoot $n11inner -Files @($n11innerMain)) -match 'dd-new11w-[0-9a-f]+ can be changed by non-administrators') }
+        }
+        finally {
+            if (Test-Path -LiteralPath $n11lnk) { [IO.Directory]::Delete($n11lnk) }
+            if (Test-Path -LiteralPath $n11liblnk) { [IO.Directory]::Delete($n11liblnk) }
+            if (Test-Path -LiteralPath $n11pf) { [IO.Directory]::Delete($n11pf, $true) }
+            if ($n11weakParent -and (Test-Path -LiteralPath $n11weakParent)) { [IO.Directory]::Delete($n11weakParent, $true) }
+        }
+    }
+    else { Write-Host '  SKIP NEW-11 install-folder checks on real ACLs (not running as administrator)' -ForegroundColor Yellow }
+    # The end-to-end refusal is tested below Scenario S5, once Invoke-DDOffline is defined.
+}
+else { Write-Host '  SKIP NEW-11 install-folder checks (Windows only)' -ForegroundColor Yellow }
+
 Write-Host 'Scenario S9: NEW-9 crafted numbers never throw; NEW-7 HPIA folder chain; NEW-10 gate re-checked before install' -ForegroundColor Cyan
 # NEW-9: pure.
 $n9big = '0x' + ('F' * 17)
@@ -681,13 +764,15 @@ function Invoke-DDOffline {
     # Runs DriverDoctor.ps1 on the screenshot snapshot in a child process. Not elevated: -OutputPath
     # points at a temp folder. Elevated: no -OutputPath (it is refused), the folder is read from the
     # "Output:" line; Remove-DDOfflineOutput deletes it (and %ProgramData%\DriverDoctor if the run made it).
-    param([string[]]$ExtraArgs = @())   # not $Args: that is an automatic variable and would not bind
+    param([string[]]$ExtraArgs = @(), [switch]$KeepInstallFolderCheck)   # not $Args: that is an automatic variable and would not bind
     $elev = ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) -and ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     $pdRoot = if ($env:ProgramData) { Join-Path $env:ProgramData 'DriverDoctor' } else { '' }
     $rootExisted = $pdRoot -and (Test-Path -LiteralPath $pdRoot)
     $dir = Join-Path ([IO.Path]::GetTempPath()) ("dd-test-" + [guid]::NewGuid().ToString('N'))
     $all = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $root 'DriverDoctor.ps1'), '-SnapshotPath', (Join-Path $fixtures 'envy-screenshots.snapshot.json'), '-NoOpen') + $ExtraArgs
     if (-not $elev -and ($ExtraArgs -notcontains '-OutputPath')) { $all += @('-OutputPath', $dir) }
+    # NEW-11: the checkout is not an administrators-only install folder, so elevated test runs opt out of that check.
+    if ($elev -and -not $KeepInstallFolderCheck) { $all += '-SkipInstallFolderCheck' }
     $errFile = Join-Path ([IO.Path]::GetTempPath()) ("dd-err-" + [guid]::NewGuid().ToString('N') + '.txt')
     # Stderr goes to a file: in 5.1, 'Stop' turns the first native stderr line into a terminating error.
     $p = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $all -Wait -PassThru -NoNewWindow -RedirectStandardError $errFile -RedirectStandardOutput ($errFile + '.out')
@@ -705,6 +790,12 @@ function Remove-DDOfflineOutput {
     param($Run)
     if ($Run.Dir -and (Test-Path -LiteralPath $Run.Dir)) { try { [IO.Directory]::Delete($Run.Dir, $true) } catch { Write-Host "  (cleanup: could not delete $($Run.Dir): $($_.Exception.Message))" -ForegroundColor Yellow } }
     if ($Run.Elevated -and -not $Run.RootExisted -and $Run.PdRoot -and (Test-Path -LiteralPath $Run.PdRoot) -and @(Get-ChildItem -LiteralPath $Run.PdRoot -Force).Count -eq 0) { try { [IO.Directory]::Delete($Run.PdRoot) } catch { Write-Host "  (cleanup: could not delete $($Run.PdRoot))" -ForegroundColor Yellow } }
+}
+
+if (($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) -and ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    # NEW-11 end to end: this checkout is not under Program Files, so an elevated run is refused before any output exists.
+    $r11 = Invoke-DDOffline -KeepInstallFolderCheck
+    Test-That 'NEW-11: an elevated run from a checkout is refused before any output folder is made' { $r11.Exit -ne 0 -and $r11.ErrFlat -match 'only from a folder that only administrators can change' -and $r11.Dir -eq '' -and ($r11.RootExisted -or -not (Test-Path -LiteralPath $r11.PdRoot)) }
 }
 
 Write-Host 'Scenario S5: NEW-1/2/4 elevated output and report opening' -ForegroundColor Cyan
