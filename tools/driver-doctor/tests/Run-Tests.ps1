@@ -21,6 +21,18 @@ function Test-That {
 function Get-Base { Get-Content -Raw -LiteralPath (Join-Path $fixtures 'envy-screenshots.snapshot.json') | ConvertFrom-Json }
 function Find-F { param($A, [string]$Id) $A.Findings | Where-Object { $_.Id -eq $Id } | Select-Object -First 1 }
 function Find-FLike { param($A, [string]$Pattern) $A.Findings | Where-Object { $_.Id -like $Pattern } | Select-Object -First 1 }
+function New-TestAdminFile {
+    # Writes a one-byte fixture file and makes BUILTIN\Administrators its owner, as a real install from an
+    # elevated Explorer or PowerShell leaves it. The owner is set explicitly because it otherwise comes from
+    # the token: a Git Bash (Cygwin) host sets an elevated token's default owner to the user, so a file
+    # written from there is user-owned and the trusted-owner checks (NEW-4, NEW-7, NEW-11) rightly refuse it.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+    param([string]$Path)
+    Set-Content -LiteralPath $Path -Value 'x' -Encoding Ascii
+    $acl = Get-Acl -LiteralPath $Path
+    $acl.SetOwner((New-Object System.Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)))
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
 
 $gpuId = 'PCI\VEN_8086&DEV_7D45&SUBSYS_8C66103C&REV_08\3&11583659&0&10'
 $fwId = 'UEFI\RES_{F9A422C9-7892-42C3-A237-218610BFD215}\0'
@@ -356,9 +368,9 @@ if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
         $n11liblnk = Join-Path $n11pf 'liblnk'
         try {
             New-DDSecureDirectory $n11pf; New-DDSecureDirectory (Join-Path $n11pf 'lib')
-            $n11main = Join-Path $n11pf 'DriverDoctor.ps1'; Set-Content -LiteralPath $n11main -Value 'x' -Encoding Ascii
-            $n11f = Join-Path $n11pf 'lib\DD.Collect.ps1'; Set-Content -LiteralPath $n11f -Value 'x' -Encoding Ascii
-            $n11cs = Join-Path $n11pf 'lib\DisplayConfig.cs'; Set-Content -LiteralPath $n11cs -Value 'x' -Encoding Ascii
+            $n11main = Join-Path $n11pf 'DriverDoctor.ps1'; New-TestAdminFile $n11main
+            $n11f = Join-Path $n11pf 'lib\DD.Collect.ps1'; New-TestAdminFile $n11f
+            $n11cs = Join-Path $n11pf 'lib\DisplayConfig.cs'; New-TestAdminFile $n11cs
             $n11files = @($n11main, $n11f, $n11cs)
             Test-That 'NEW-11: an administrators-only install under Program Files passes (both implementations)' { (Test-DDInstallFolder -ToolRoot $n11pf) -eq '' -and (Test-DDInstallChain -ToolRoot $n11pf -Files $n11files) -eq '' }
             $n11acl = Get-Acl -LiteralPath $n11f
@@ -367,7 +379,7 @@ if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
             $n11acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('BUILTIN\Users', 'Modify', 'Allow')))
             Set-Acl -LiteralPath $n11f -AclObject $n11acl
             Test-That 'NEW-11: one script users may rewrite is refused, naming it (both implementations)' { ((Test-DDInstallFolder -ToolRoot $n11pf) -match 'DD\.Collect\.ps1 can be changed by non-administrators') -and ((Test-DDInstallChain -ToolRoot $n11pf -Files $n11files) -match 'DD\.Collect\.ps1 can be changed by non-administrators') }
-            Remove-Item -LiteralPath $n11f -Force; Set-Content -LiteralPath $n11f -Value 'x' -Encoding Ascii
+            Remove-Item -LiteralPath $n11f -Force; New-TestAdminFile $n11f
             Test-That 'NEW-11: passes again once that file is administrators-only (both implementations)' { (Test-DDInstallFolder -ToolRoot $n11pf) -eq '' -and (Test-DDInstallChain -ToolRoot $n11pf -Files $n11files) -eq '' }
             Test-That 'NEW-11: a missing DisplayConfig.cs is refused by the bootstrap' { (Test-DDInstallChain -ToolRoot $n11pf -Files @($n11main, (Join-Path $n11pf 'lib\Missing.cs'))) -match 'Missing\.cs could not be read' }
             New-Item -ItemType Junction -Path $n11lnk -Value (Join-Path $n11pf 'lib') | Out-Null
@@ -381,12 +393,12 @@ if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
             # NEW-4 rule inside the install folder too: an item the user owns is refused even with an administrators-only DACL.
             $n11owned = Join-Path $n11pf 'Owned'; New-DDSecureDirectory $n11owned
             $n11ownAcl = Get-Acl -LiteralPath $n11owned; $n11ownAcl.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User); Set-Acl -LiteralPath $n11owned -AclObject $n11ownAcl
-            $n11ownFile = Join-Path $n11owned 'x.ps1'; Set-Content -LiteralPath $n11ownFile -Value 'x' -Encoding Ascii
+            $n11ownFile = Join-Path $n11owned 'x.ps1'; New-TestAdminFile $n11ownFile
             Test-That 'NEW-11: a folder inside the install that the user owns is refused (both implementations)' { (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $n11owned).Sddl) -and ((Test-DDInstallFolder -ToolRoot $n11pf) -match 'Owned can be changed by non-administrators') -and ((Test-DDInstallChain -ToolRoot $n11pf -Files @($n11main, $n11ownFile)) -match 'Owned can be changed by non-administrators') }
             # The chain above the tool counts: an administrators-only tool folder inside a user-writable parent is refused, naming the parent.
             $n11weakParent = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) ('dd-new11w-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
             New-DDSecureDirectory -Path $n11weakParent -Sddl 'D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;BU)'
-            $n11inner = Join-Path $n11weakParent 'DriverDoctor'; New-DDSecureDirectory $n11inner; $n11innerMain = Join-Path $n11inner 'DriverDoctor.ps1'; Set-Content -LiteralPath $n11innerMain -Value 'x' -Encoding Ascii
+            $n11inner = Join-Path $n11weakParent 'DriverDoctor'; New-DDSecureDirectory $n11inner; $n11innerMain = Join-Path $n11inner 'DriverDoctor.ps1'; New-TestAdminFile $n11innerMain
             Test-That 'NEW-11: an administrators-only tool folder under a user-writable parent is refused, naming the parent (both implementations)' { ((Test-DDInstallFolder -ToolRoot $n11inner) -match 'dd-new11w-[0-9a-f]+ can be changed by non-administrators') -and ((Test-DDInstallChain -ToolRoot $n11inner -Files @($n11innerMain)) -match 'dd-new11w-[0-9a-f]+ can be changed by non-administrators') }
         }
         finally {
@@ -432,10 +444,10 @@ if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
         try {
             New-DDSecureDirectory $n7root
             $n7good = Join-Path $n7root 'HP\HPIA\bin'; New-DDSecureDirectory (Join-Path $n7root 'HP'); New-DDSecureDirectory (Join-Path $n7root 'HP\HPIA'); New-DDSecureDirectory $n7good
-            $n7exe = Join-Path $n7good 'HPImageAssistant.exe'; Set-Content -LiteralPath $n7exe -Value 'x' -Encoding Ascii
+            $n7exe = Join-Path $n7good 'HPImageAssistant.exe'; New-TestAdminFile $n7exe
             Test-That 'NEW-7: an administrators-only chain up to the root passes' { (Test-DDAdminOnlyPath -Path $n7exe -Root $n7root) -eq '' }
             $n7weak = Join-Path $n7root 'Vendor'; New-DDSecureDirectory -Path $n7weak -Sddl 'D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;BU)'
-            $n7weakExe = Join-Path $n7weak 'HPImageAssistant.exe'; Set-Content -LiteralPath $n7weakExe -Value 'x' -Encoding Ascii
+            $n7weakExe = Join-Path $n7weak 'HPImageAssistant.exe'; New-TestAdminFile $n7weakExe
             Test-That 'NEW-7: a user-writable folder in the chain is refused' { (Test-DDAdminOnlyPath -Path $n7weakExe -Root $n7root) -match 'Vendor can be changed by non-administrators' }
             $n7lnk = Join-Path $n7root 'Link'; New-Item -ItemType Junction -Path $n7lnk -Value $n7good | Out-Null
             Test-That 'NEW-7: a junction in the chain is refused' { (Test-DDAdminOnlyPath -Path (Join-Path $n7lnk 'HPImageAssistant.exe') -Root $n7root) -match 'Link is a link or junction' }
@@ -449,18 +461,18 @@ if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
             # The root itself is part of the chain: a weak root with an administrators-only subfolder is refused, naming the root.
             $n7weakRoot = Join-Path $n7root 'WeakRoot'; New-DDSecureDirectory -Path $n7weakRoot -Sddl 'D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;BU)'
             $n7wrBin = Join-Path $n7weakRoot 'bin'; New-DDSecureDirectory $n7wrBin
-            $n7wrExe = Join-Path $n7wrBin 'HPImageAssistant.exe'; Set-Content -LiteralPath $n7wrExe -Value 'x' -Encoding Ascii
+            $n7wrExe = Join-Path $n7wrBin 'HPImageAssistant.exe'; New-TestAdminFile $n7wrExe
             Test-That 'NEW-7: a user-writable root is refused even when the exe folder is administrators-only' { (Test-DDAdminOnlyPath -Path $n7wrExe -Root $n7weakRoot) -match 'WeakRoot can be changed by non-administrators' }
             # NEW-4 rule applies here too: a folder the user owns is refused even with an administrators-only-looking DACL.
             $n7owned = Join-Path $n7root 'Owned'; New-DDSecureDirectory $n7owned
             $n7me = [Security.Principal.WindowsIdentity]::GetCurrent().User
             $n7ownAcl = Get-Acl -LiteralPath $n7owned; $n7ownAcl.SetOwner($n7me); Set-Acl -LiteralPath $n7owned -AclObject $n7ownAcl
-            $n7ownExe = Join-Path $n7owned 'HPImageAssistant.exe'; Set-Content -LiteralPath $n7ownExe -Value 'x' -Encoding Ascii
+            $n7ownExe = Join-Path $n7owned 'HPImageAssistant.exe'; New-TestAdminFile $n7ownExe
             Test-That 'NEW-7: a folder owned by the user is refused even with an administrators-only DACL' { (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $n7owned).Sddl) -and ((Test-DDAdminOnlyPath -Path $n7ownExe -Root $n7root) -match 'Owned can be changed by non-administrators') }
             # Wiring: a user-writable folder planted under the real Program Files is refused by Find-DDHPIA before the signature check.
             New-DDSecureDirectory $n7pf
             $n7pfWeak = Join-Path $n7pf 'weak'; New-DDSecureDirectory -Path $n7pfWeak -Sddl 'D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;BU)'
-            $n7pfExe = Join-Path $n7pfWeak 'HPImageAssistant.exe'; Set-Content -LiteralPath $n7pfExe -Value 'x' -Encoding Ascii
+            $n7pfExe = Join-Path $n7pfWeak 'HPImageAssistant.exe'; New-TestAdminFile $n7pfExe
             $n7found = Find-DDHPIA -HPIAPath $n7pfExe 3>$null
             Test-That 'NEW-7: Find-DDHPIA refuses a user-writable folder under Program Files, before the signature check' { $null -eq $n7found.Path -and @($n7found.Rejected).Count -eq 1 -and $n7found.Rejected[0] -match 'weak can be changed by non-administrators' -and $n7found.Rejected[0] -notmatch 'Authenticode' }
         }
