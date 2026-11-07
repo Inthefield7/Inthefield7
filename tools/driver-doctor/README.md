@@ -14,7 +14,7 @@ Windows driver and firmware health tool. It was built for an HP ENVY x360 16 (20
    powershell -ExecutionPolicy Bypass -File .\DriverDoctor.ps1 -Mode Repair -WhatIf
    ```
 
-Optional, recommended on HP machines: extract [HP Image Assistant](https://ftp.ext.hp.com/pub/caps-softpaq/cmit/HPIA.html) to `%ProgramFiles%\HP\HPIA\bin` (or pass `-HPIAPath` to another folder under Program Files). The tool runs as administrator, so it runs HP Image Assistant only from Program Files and only with a valid HP Inc. signature; folders other users can write to, such as `C:\HPIA` or `C:\SWSetup`, are not searched, and a refused copy is reported as `HPIA-REJECTED`. The tool then compares your drivers against HP's certified set for this exact model.
+Optional, recommended on HP machines: extract [HP Image Assistant](https://ftp.ext.hp.com/pub/caps-softpaq/cmit/HPIA.html) to `%ProgramFiles%\HP\HPIA\bin` (or pass `-HPIAPath` to another folder under Program Files). The tool runs as administrator, so it runs HP Image Assistant only from Program Files and only with a valid HP Inc. signature; folders other users can write to, such as `C:\HPIA` or `C:\SWSetup`, are not searched, and a refused copy is reported as `HPIA-REJECTED`. The tool then compares your drivers against HP's certified set for this exact model. HP Image Assistant's reports and downloaded SoftPaqs are kept in a new `%ProgramData%\DriverDoctor\<timestamp>` folder that only SYSTEM and Administrators can change, not in the Desktop folder; if `%ProgramData%\DriverDoctor` is a link or other users can change it, HP Image Assistant is not run. These folders are not deleted automatically.
 
 ## What the screenshots already show (2026-08-26)
 

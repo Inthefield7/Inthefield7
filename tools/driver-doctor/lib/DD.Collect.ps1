@@ -373,14 +373,60 @@ function Find-DDHPIA {
     return [pscustomobject]@{ Path = $null; Rejected = @($rejected) }
 }
 
+function New-DDSecureDirectory {
+    # SEC-002: creates Path with the given security descriptor applied at creation (no window in
+    # which it carries the parent's ACL). Refuses a path that already exists.
+    # No ShouldProcess: it only creates an empty work folder, and its callers either run under
+    # Diagnose's read-only HPIA analysis or after Repair's own ShouldProcess prompt.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+    param([string]$Path, [string]$Sddl = $script:DDAdminOnlySddl)
+    if (Test-Path -LiteralPath $Path) { throw "Refusing to reuse existing folder $Path." }
+    $sec = New-Object System.Security.AccessControl.DirectorySecurity
+    $sec.SetSecurityDescriptorSddlForm($Sddl)
+    $legacy = [System.IO.Directory].GetMethod('CreateDirectory', [type[]]@([string], [System.Security.AccessControl.DirectorySecurity]))
+    if ($legacy) { [void][System.IO.Directory]::CreateDirectory($Path, $sec) }          # .NET Framework (5.1)
+    else {                                                                              # .NET (7.x); looked up by name, absent on 5.1
+        $ext = 'System.IO.FileSystemAclExtensions' -as [type]
+        [void]$ext::Create((New-Object System.IO.DirectoryInfo $Path), $sec)
+    }
+}
+
+function Get-DDHPIAWorkDir {
+    # SEC-002: a fresh folder for HPIA reports and SoftPaqs under %ProgramData%\DriverDoctor that only
+    # SYSTEM and Administrators can change. The Desktop work folder is writable by any program the
+    # user runs, which could swap a downloaded installer or plant a junction before HPIA (running as
+    # administrator) uses it. Throws instead of falling back to a weaker folder.
+    # -Root exists for tests only.
+    param([string]$Root = (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'DriverDoctor'))
+    $root = $Root
+    if (-not (Test-Path -LiteralPath $root)) {
+        try { New-DDSecureDirectory $root } catch { if (-not (Test-Path -LiteralPath $root)) { throw } }   # lost a creation race: checked below
+    }
+    foreach ($check in 1, 2) {
+        $item = Get-Item -LiteralPath $root -Force
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw "$root is a link or junction; HPIA folders are not created there." }
+        if (-not (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $root).Sddl)) { throw "$root can be changed by non-administrators; HPIA folders are not created there. Remove it (as administrator) and re-run." }
+        if ($check -eq 1) {
+            $leaf = Join-Path $root ('{0}-{1}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), [guid]::NewGuid().ToString('N').Substring(0, 8))
+            New-DDSecureDirectory $leaf
+        }
+    }
+    if (-not (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $leaf).Sddl)) { throw "$leaf did not get an administrators-only ACL." }
+    return $leaf
+}
+
 function Get-DDHPIAAnalysis {
-    param([string]$HPIAPath, [string]$WorkDir)
+    param([string]$HPIAPath)
     $found = Find-DDHPIA $HPIAPath
     $exe = $found.Path
     $r = [pscustomobject]@{ Present = [bool]$exe; Path = $exe; HPIAPathGiven = [bool]$HPIAPath; Rejected = @($found.Rejected); ExitCode = $null; Error = $null; ReportFolder = $null; Recommendations = @() }
     if (-not $exe) { return $r }
-    $report = Join-Path $WorkDir 'hpia-analyze'
-    New-Item -ItemType Directory -Force -Path $report -WhatIf:$false | Out-Null
+    try { $base = Get-DDHPIAWorkDir }
+    catch { $r.Error = "HPIA not run: no safe work folder ($($_.Exception.Message))"; return $r }
+    # Created with the explicit admin-only ACL (owner Administrators). Not copied to the Desktop:
+    # copying as administrator into a user-writable folder is exactly what a junction could redirect.
+    $report = Join-Path $base 'hpia-analyze'
+    New-DDSecureDirectory $report
     $r.ReportFolder = $report
     Write-Host '    HP Image Assistant is analyzing (read-only, may take several minutes)...' -ForegroundColor DarkGray
     $hpiaArgs = @('/Operation:Analyze', '/Category:All', '/Selection:All', '/Action:List', '/Silent', "/ReportFolder:`"$report`"")
@@ -423,18 +469,16 @@ function Get-DDHPIAAnalysis {
 }
 
 function Get-DDSnapshot {
-    # These three are read inside the collector script blocks (& $Script sees this scope);
+    # These two are read inside the collector script blocks (& $Script sees this scope);
     # PSReviewUnusedParameter does not follow script blocks.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Days')]
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'HPIAPath')]
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'WorkDir')]
     [CmdletBinding()]
     param(
         [int]$Days = 180,
         [switch]$SkipWindowsUpdate,
         [switch]$SkipHPIA,
         [string]$HPIAPath,
-        [string]$WorkDir,
         [switch]$Quick  # skip slow network-backed collectors (used for the post-repair re-check)
     )
     $s = [pscustomobject]@{
@@ -467,7 +511,7 @@ function Get-DDSnapshot {
         $s.WindowsUpdate = Invoke-DDCollector 'Windows Update driver search' { Get-DDWindowsUpdateDrivers } $s
     }
     if (-not $Quick -and -not $SkipHPIA) {
-        $s.HPIA = Invoke-DDCollector 'HP Image Assistant' { Get-DDHPIAAnalysis -HPIAPath $HPIAPath -WorkDir $WorkDir } $s
+        $s.HPIA = Invoke-DDCollector 'HP Image Assistant' { Get-DDHPIAAnalysis -HPIAPath $HPIAPath } $s
     }
     return $s
 }

@@ -93,7 +93,7 @@ try {
             if ($Mode -eq 'Repair') { throw 'Repair must run as Administrator. Use Run-Repair.cmd or an elevated PowerShell.' }
             Write-Warning 'Not running as Administrator: some logs and driver details will be missing. Run-Diagnose.cmd elevates automatically.'
         }
-        $snapshot = Get-DDSnapshot -Days $Days -SkipWindowsUpdate:$SkipWindowsUpdate -SkipHPIA:$SkipHPIA -HPIAPath $HPIAPath -WorkDir $OutputPath
+        $snapshot = Get-DDSnapshot -Days $Days -SkipWindowsUpdate:$SkipWindowsUpdate -SkipHPIA:$SkipHPIA -HPIAPath $HPIAPath
         $snapshot | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $OutputPath 'snapshot.json') -Encoding UTF8 -WhatIf:$false
     }
 
@@ -114,7 +114,7 @@ try {
         if ($applied -gt 0 -and -not $WhatIfPreference) {
             Write-Host "`nVerifying: re-collecting state after repair..." -ForegroundColor Cyan
             Start-Sleep -Seconds 5
-            $finalSnapshot = Get-DDSnapshot -Days $Days -Quick -WorkDir $OutputPath
+            $finalSnapshot = Get-DDSnapshot -Days $Days -Quick
             $finalSnapshot | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $OutputPath 'snapshot-after.json') -Encoding UTF8 -WhatIf:$false
             $finalAnalysis = Invoke-DDAnalysis -Snapshot $finalSnapshot -EventsSince $repairStart
             $comparison = Compare-DDFindings -Before $analysis.Findings -After $finalAnalysis.Findings

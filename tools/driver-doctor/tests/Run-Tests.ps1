@@ -219,6 +219,60 @@ $script:gateCalls = 0
 $r3 = Invoke-DDInstallWindowsUpdate -Action (New-DDAction 'InstallWindowsUpdate' 'u-1' 'x' $false) -Title 'Intel Corporation - Display - 32.0.101.9999' -WhatIf
 Test-That 'WU driver (not firmware) skips the gate and still asks first' { $r3.Result -eq 'Declined' -and $script:gateCalls -eq 0 }
 
+Write-Host 'Scenario S2: SEC-002 HPIA work folder is administrators-only' -ForegroundColor Cyan
+$ao = 'O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;OW)'
+Test-That 'ACL: the tool''s own SDDL is administrators-only' { (Test-DDAdminOnlySddl $script:DDAdminOnlySddl) -and [string]::Equals($script:DDAdminOnlySddl, $ao, 'Ordinal') }
+# What a file HPIA creates inside the folder looks like: owned by the user's SID, ACEs inherited.
+$um = 'O:S-1-5-21-1-2-3-1001D:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)'
+Test-That 'ACL: a user-owned child is fine only while OWNER RIGHTS (read-only) applies to it' { (Test-DDAdminOnlySddl ($um + '(A;OICIID;0x1200a9;;;OW)')) -and -not (Test-DDAdminOnlySddl $um) -and -not (Test-DDAdminOnlySddl ($um + '(A;OICIIOID;0x1200a9;;;OW)')) }
+Test-That 'ACL: OWNER RIGHTS with write access is refused' { -not (Test-DDAdminOnlySddl ($um + '(A;OICIID;FA;;;OW)')) }
+# The real C:\ProgramData ACL (read on the laptop 2026-11-07): Users may create files and folders.
+Test-That 'ACL: C:\ProgramData itself is not administrators-only' { -not (Test-DDAdminOnlySddl 'O:SYG:SYD:PAI(A;OICIIO;GA;;;CO)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;CI;DCLCRPCR;;;BU)') }
+Test-That 'ACL: a folder owned by a standard user is refused' { -not (Test-DDAdminOnlySddl 'O:S-1-5-21-1-2-3-1001D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)') }
+Test-That 'ACL: write for Authenticated Users or Users is refused' { -not (Test-DDAdminOnlySddl ($ao + '(A;OICI;0x1301bf;;;AU)')) -and -not (Test-DDAdminOnlySddl ($ao + '(A;;0x4;;;BU)')) }
+Test-That 'ACL: read-only access for others and deny ACEs are fine' { (Test-DDAdminOnlySddl ($ao + '(A;OICI;FR;;;WD)')) -and (Test-DDAdminOnlySddl ($ao + '(D;;FA;;;WD)')) }
+Test-That 'ACL: CREATOR OWNER only as inherit-only' { (Test-DDAdminOnlySddl 'O:SYD:PAI(A;OICIIO;GA;;;CO)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)') -and -not (Test-DDAdminOnlySddl 'O:SYD:PAI(A;OICI;FA;;;CO)(A;OICI;FA;;;SY)') }
+Test-That 'ACL: NULL DACL, empty and unparsable descriptors are refused' { -not (Test-DDAdminOnlySddl 'O:BAD:NO_ACCESS_CONTROL') -and -not (Test-DDAdminOnlySddl '') -and -not (Test-DDAdminOnlySddl 'garbage') }
+if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
+    . (Join-Path $root 'lib\DD.Collect.ps1')
+    $sroot = Join-Path ([IO.Path]::GetTempPath()) ('dd-sec002-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $sroot | Out-Null
+    $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    try {
+        $sd = Join-Path $sroot 'secure'
+        New-DDSecureDirectory -Path $sd -Sddl "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;$me)"
+        $acl = Get-Acl -LiteralPath $sd
+        Test-That 'folder gets its ACL at creation: protected, nothing inherited, only the given SIDs' {
+            $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+            $acl.AreAccessRulesProtected -and @($rules | Where-Object { $_.IsInherited }).Count -eq 0 -and
+            @($rules | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique).Count -eq 3 -and
+            @($rules | Where-Object { $_.IdentityReference.Value -notin 'S-1-5-18', 'S-1-5-32-544', $me }).Count -eq 0
+        }
+        Test-That 'an existing folder is never reused' { $threw = $false; try { New-DDSecureDirectory -Path $sd -Sddl "D:PAI(A;;FA;;;$me)" } catch { $threw = $true }; $threw }
+        $plain = Join-Path $sroot 'plain'; New-Item -ItemType Directory -Path $plain | Out-Null
+        Test-That 'work folder refused when the root is user-writable' { $m = ''; try { Get-DDHPIAWorkDir -Root $plain | Out-Null } catch { $m = $_.Exception.Message }; $m -match 'non-administrators' -and @(Get-ChildItem -LiteralPath $plain).Count -eq 0 }
+        $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        # Elevated: the target itself is admin-only, so only the link check can refuse it.
+        $jt = Join-Path $sroot 'tgt'
+        if ($elevated) { New-DDSecureDirectory $jt } else { New-Item -ItemType Directory -Path $jt | Out-Null }
+        $jn = Join-Path $sroot 'lnk'; New-Item -ItemType Junction -Path $jn -Value $jt | Out-Null
+        Test-That 'work folder refused when the root is a junction' { $m = ''; try { Get-DDHPIAWorkDir -Root $jn | Out-Null } catch { $m = $_.Exception.Message }; $m -match 'is a link or junction' -and @(Get-ChildItem -LiteralPath $jt -Force).Count -eq 0 }
+        if ($elevated) {
+            $wr = Join-Path $sroot 'pd'
+            $leaf = Get-DDHPIAWorkDir -Root $wr
+            Test-That 'elevated: fresh work folder is administrators-only, inside an administrators-only root' { $leaf -like "$wr\*" -and (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $wr).Sddl) -and (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $leaf).Sddl) }
+            $leaf2 = Get-DDHPIAWorkDir -Root $wr
+            Test-That 'elevated: each call gets a new folder; HPIA subfolders are administrators-only' { $sub = Join-Path $leaf2 'hpia-softpaqs'; New-DDSecureDirectory $sub; $leaf2 -ne $leaf -and (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $sub).Sddl) }
+            Test-That 'elevated: a file created there by plain means stays administrators-only' { $f = Join-Path $leaf2 'hpia-softpaqs\sp1.exe'; Set-Content -LiteralPath $f -Value 'x' -Encoding Ascii; Test-DDAdminOnlySddl (Get-Acl -LiteralPath $f).Sddl }
+        }
+        else { Write-Host '  SKIP elevated work-folder creation (not running as administrator)' -ForegroundColor Yellow }
+    }
+    finally {
+        if (Test-Path -LiteralPath $jn) { cmd /c rmdir "$jn" | Out-Null }
+        Remove-Item -LiteralPath $sroot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 Write-Host 'Scenario K: Windows Update offer connected to a faulted device' -ForegroundColor Cyan
 $s = Get-Base
 $s.WindowsUpdate = [pscustomobject]@{ Searched = $true; Error = $null; Updates = @([pscustomobject]@{ UpdateId = 'u-1'; Title = 'Intel Corporation - Display - 32.0.101.9999'; DriverClass = 'Display'; DriverModel = 'Intel(R) Graphics'; DriverProvider = 'Intel Corporation'; DriverVerDate = '2026-09-01'; HardwareId = 'PCI\VEN_8086&DEV_7D45&SUBSYS_8C66103C' }) }

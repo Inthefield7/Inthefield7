@@ -254,6 +254,46 @@ function Test-DDHPPublisher {
     return ($orgs.Count -eq 1 -and $orgs[0] -ceq 'O=HP Inc.')
 }
 
+# SEC-002: HPIA downloads and runs installers as administrator, so its folders must be writable by
+# SYSTEM and Administrators only. Owner Administrators; protected DACL (nothing inherited from
+# %ProgramData%, which lets Users create files); full control for SYSTEM and Administrators only.
+# OWNER RIGHTS (OW) limited to read/execute, inherited: files and folders that the elevated tool or
+# HPIA creates can be owned by the user's own SID (Windows' default owner setting), and an owner
+# otherwise always keeps the right to change the ACL - from any process running as that user,
+# elevated or not.
+$script:DDAdminOnlySddl = 'O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;OW)'
+
+function Test-DDAdminOnlySddl {
+    # SEC-002: true when no one but SYSTEM, Administrators and TrustedInstaller can write, delete or
+    # change permissions. Read access for others is allowed. The owner must be one of those three,
+    # or else an OWNER RIGHTS ACE that applies to this object must take away the owner's implicit
+    # permission to change the ACL. CREATOR OWNER is accepted only as an inherit-only ACE.
+    param([string]$Sddl)
+    if (-not $Sddl) { return $false }
+    $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    # WRITE_DATA/ADD_FILE, APPEND/ADD_SUBDIR, WRITE_EA, DELETE_CHILD, WRITE_ATTRIBUTES, DELETE,
+    # WRITE_DAC, WRITE_OWNER, GENERIC_ALL, GENERIC_WRITE, MAXIMUM_ALLOWED.
+    $writeMask = 0x2 -bor 0x4 -bor 0x10 -bor 0x40 -bor 0x100 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x10000000 -bor 0x40000000 -bor 0x2000000
+    $inheritOnly = 0x08   # INHERIT_ONLY_ACE; compared as an integer (5.1 cannot -band the AceFlags enum)
+    try { $sd = New-Object System.Security.AccessControl.RawSecurityDescriptor($Sddl) } catch { return $false }
+    if (-not $sd.Owner) { return $false }
+    if ($null -eq $sd.DiscretionaryAcl) { return $false }   # a NULL DACL grants everyone everything
+    $ownerRightsHere = $false
+    foreach ($ace in $sd.DiscretionaryAcl) {
+        if ($ace -isnot [System.Security.AccessControl.KnownAce]) { return $false }
+        if ([string]$ace.AceType -notin 'AccessAllowed', 'AccessAllowedObject', 'AccessAllowedCallback', 'AccessAllowedCallbackObject') { continue }
+        $sid = $ace.SecurityIdentifier.Value
+        $io = (([int]$ace.AceFlags) -band $inheritOnly) -ne 0
+        if ($sid -eq 'S-1-3-4' -and -not $io) { $ownerRightsHere = $true }
+        if (([int64]$ace.AccessMask -band $writeMask) -eq 0) { continue }
+        if ($trusted -contains $sid) { continue }
+        if ($sid -eq 'S-1-3-0' -and $io) { continue }
+        return $false
+    }
+    if ($trusted -notcontains $sd.Owner.Value -and -not $ownerRightsHere) { return $false }
+    return $true
+}
+
 function Test-DDUnderFolder {
     # SEC-001: true only when Path, fully resolved, lies inside one of Roots (case-insensitive).
     param([string]$Path, [string[]]$Roots)

@@ -187,7 +187,7 @@ function Write-DDBitLockerWarning {
 
 function Invoke-DDHPIAInstall {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
-    param($Action, [string]$HPIAPath, [string]$WorkDir)
+    param($Action, [string]$HPIAPath)
     $found = Find-DDHPIA $HPIAPath
     $exe = $found.Path
     if (-not $exe) {
@@ -201,9 +201,14 @@ function Invoke-DDHPIAInstall {
         Write-DDBitLockerWarning
     }
     if (-not $PSCmdlet.ShouldProcess("HP Image Assistant ($categories)", 'Download and install HP-recommended updates for this model')) { return (New-DDResult $Action 'Declined' '') }
-    $report = Join-Path $WorkDir 'hpia-install'
-    $softpaqs = Join-Path $WorkDir 'hpia-softpaqs'
-    New-Item -ItemType Directory -Force -Path $report, $softpaqs | Out-Null
+    # SEC-002: SoftPaqs are downloaded and then run as administrator, so they live in a fresh
+    # admin-only folder under %ProgramData%\DriverDoctor, never in the user-writable Desktop folder.
+    try { $base = Get-DDHPIAWorkDir }
+    catch { return (New-DDResult $Action 'Skipped' "HPIA not run: no safe work folder ($($_.Exception.Message))") }
+    $report = Join-Path $base 'hpia-install'
+    $softpaqs = Join-Path $base 'hpia-softpaqs'
+    New-DDSecureDirectory $report
+    New-DDSecureDirectory $softpaqs
     $hpiaArgs = @('/Operation:Analyze', "/Category:$categories", '/Selection:All', '/Action:Install', '/Silent', "/ReportFolder:`"$report`"", "/SoftpaqDownloadFolder:`"$softpaqs`"")
     $p = Start-Process -FilePath $exe -ArgumentList $hpiaArgs -Wait -PassThru -WindowStyle Hidden
     $known = @{ 0 = 'Applied'; 256 = 'Nothing to install'; 257 = 'Nothing selected'; 3010 = 'Applied (restart required)'; 4096 = 'Platform not supported'; 4097 = 'Invalid parameters' }
@@ -266,7 +271,7 @@ function Invoke-DDRepair {
             'RestartDevice' { Invoke-DDRestartDevice -Action $a }
             'ScanDevices' { Invoke-DDScanDevices -Action $a }
             'InstallWindowsUpdate' { Invoke-DDInstallWindowsUpdate -Action $a -Title $titles[[string]$a.Target] }
-            'HPIAInstall' { Invoke-DDHPIAInstall -Action $a -HPIAPath $HPIAPath -WorkDir $WorkDir }
+            'HPIAInstall' { Invoke-DDHPIAInstall -Action $a -HPIAPath $HPIAPath }
             'RestartComputer' { $null }  # handled last, once
             default { New-DDResult $a 'Manual step' $a.Detail }
         }
