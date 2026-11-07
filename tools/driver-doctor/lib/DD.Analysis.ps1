@@ -414,6 +414,8 @@ function Get-DDEventClusters {
 # ---------------------------------------------------------------------------
 
 function New-DDFinding {
+    # Builds an in-memory object only; "New" is not a system change.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
     param(
         [string]$Id, [string]$Severity, [string]$Category, [string]$Title,
         [string[]]$Evidence, [string]$Interpretation, [string]$Confidence,
@@ -434,6 +436,8 @@ function New-DDFinding {
 }
 
 function New-DDAction {
+    # Builds an in-memory object only; "New" is not a system change.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
     param([string]$Type, [string]$Target, [string]$Detail, [bool]$Firmware = $false)
     return [pscustomobject]@{ Type = $Type; Target = $Target; Detail = $Detail; RequiresFirmwareConsent = $Firmware }
 }

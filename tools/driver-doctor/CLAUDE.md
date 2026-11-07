@@ -15,7 +15,7 @@ Done = the built-in panel shows the desktop after a normal boot. The proof is `r
 | **Built-in panel works again (no repair was run by this tool)** | FOUNDER-STATED 2026-11-07; cause UNKNOWN until `Get-DisplayChange.ps1` output is read |
 | Tool built: collect -> analyze -> (repair -> re-verify) -> report | DONE |
 | `tests/Run-Tests.ps1`: 96/96 pass on Windows PowerShell 5.1.26100 (the laptop, 2026-11-06) | VERIFIED |
-| PSScriptAnalyzer: 0 findings against Windows PowerShell 5.1 and 7.0 profiles | VERIFIED |
+| PSScriptAnalyzer 1.25.0 with `PSScriptAnalyzerSettings.psd1` (5.1 compatibility rules): 0 findings in `Get-DisplayChange.ps1`, `DD.Analysis.ps1`, `Run-Tests.ps1` on 5.1 (2026-11-06). Whole tool: 8 low findings left in `DD.Collect.ps1` / `DD.Repair.ps1` (unused params, OutputType, `New-DDResult`), none a safety gap | VERIFIED |
 | `lib/DisplayConfig.cs` compiles; marshaled sizes 72/64/420 match Win32 | VERIFIED |
 | Restored to git on 2026-11-04 from the session record after a container reset; the replay reproduced the original 57/2 and 63/63 checkpoints and the final 66/66 | VERIFIED |
 | Tests under **Windows PowerShell 5.1** | VERIFIED 2026-11-06 (fixed: Repair-refusal test threw NativeCommandError under 'Stop') |
@@ -90,7 +90,7 @@ powershell -ExecutionPolicy Bypass -File tests\Run-Tests.ps1     # 5.1: must be 
 pwsh -File tests/Run-Tests.ps1                                   # 7.x if installed
 ```
 
-Optional: `Invoke-ScriptAnalyzer -Path . -Recurse` with the compatibility rules. Keep commits small and keep the README in sync.
+Optional: `Invoke-ScriptAnalyzer -Path . -Recurse -Settings .\PSScriptAnalyzerSettings.psd1` (it records which style rules are excluded and why). Keep commits small and keep the README in sync.
 
 ## Kickoff prompt for the local session
 
