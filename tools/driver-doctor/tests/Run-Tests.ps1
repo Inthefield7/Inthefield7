@@ -197,6 +197,28 @@ Test-That 'live: no Critical finding and no High finding about the GPU or displa
 Test-That 'live: plan touches neither the display nor the GPU' { @($lplan | Where-Object { $_.Type -in 'ExtendTopology', 'EnableDevice', 'SetBrightness' -or "$($_.Target)" -match 'DEV_7D45|DISPLAY\\' }).Count -eq 0 }
 Test-That 'live: plan never uninstalls, disables or deletes' { @($lplan | Where-Object { $_.Type -match 'Uninstall|Disable|Delete|Remove' }).Count -eq 0 }
 Test-That 'live: un-applied firmware capsule still reported (working panel hides nothing)' { @($la.Findings | Where-Object { $_.Category -eq 'Firmware' -and $_.Severity -eq 'High' -and $_.Title -match 'F9A422C9' }).Count -eq 1 }
+# Kernel-PnP 219: the live log has 8 devices x 28 events each (224 = the System log's own count).
+# Equal titles are real (they fail together every boot), so pin per-device counting directly.
+$is219 = { $_.Provider -eq 'Microsoft-Windows-Kernel-PnP' -and $_.Id -eq 219 }
+Test-That 'live: each 219 finding counts only its own device''s events' {
+    $f219 = @($la.Findings | Where-Object { $_.Id -like 'PNP219:*' })
+    $ok = $f219.Count -eq 8
+    foreach ($f in $f219) {
+        $own = @($liveSnap.SystemEvents | Where-Object $is219 | Where-Object { $_.Message -eq $f.Evidence[0] }).Count
+        if ($f.Title -ne "Driver failed to load (Kernel-PnP 219) x$own") { $ok = $false }
+    }
+    $ok -and @($liveSnap.SystemEvents | Where-Object $is219).Count -eq 224
+}
+Test-That '219: a device with fewer events gets its own count, not a shared one' {
+    $m = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $fixtures 'envy-live.snapshot.json') | ConvertFrom-Json
+    $face = 'The driver \Driver\WUDFRd failed to load. Device: ROOT\WINDOWSHELLOFACESOFTWAREDRIVER\0000 Status: 0xC0000365'
+    $drop = @($m.SystemEvents | Where-Object $is219 | Where-Object { $_.Message -eq $face } | Select-Object -First 5)
+    $m.SystemEvents = @($m.SystemEvents | Where-Object { $drop -notcontains $_ })
+    $t = @((Invoke-DDAnalysis -Snapshot $m).Findings | Where-Object { $_.Id -like 'PNP219:*' })
+    $faceT = @($t | Where-Object { $_.Evidence[0] -eq $face } | ForEach-Object { $_.Title })
+    $restT = @($t | Where-Object { $_.Evidence[0] -ne $face } | ForEach-Object { $_.Title } | Sort-Object -Unique)
+    $faceT.Count -eq 1 -and $faceT[0] -like '* x23' -and $restT.Count -eq 1 -and $restT[0] -like '* x28'
+}
 # Regression: the live log has 14 442s naming the panel as "last instance"; only 2 are ABOUT the panel.
 Test-That 'live: verdict lists only 442s whose own device is the panel' {
     $l442 = @($la.Verdict.Evidence | Where-Object { $_ -like 'Event 442 at *' })
