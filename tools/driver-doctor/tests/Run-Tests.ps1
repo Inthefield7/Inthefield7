@@ -237,6 +237,19 @@ $evil = Get-Base; ($evil.Devices | Where-Object { $_.Class -eq 'Display' }).Name
 $html = ConvertTo-DDHtmlReport -Snapshot $evil -Analysis (Invoke-DDAnalysis -Snapshot $evil) -Plan @() -Mode 'Diagnose'
 Test-That 'device names are HTML-encoded' { ($html -notmatch '<script>alert') -and ($html -match '&lt;script&gt;') }
 Test-That 'report leads with the built-in display verdict' { $html.IndexOf('Built-in display') -lt $html.IndexOf('<h2>Findings') }
+# SEC-005: severity reaches class attributes; a crafted snapshot must not break out of them.
+$ea = Invoke-DDAnalysis -Snapshot (Get-Base)
+$ea.Verdict.Severity = 'High" onmouseover="alert(1)'
+$ef = @($ea.Findings | Where-Object { $_.Id -ne 'INTERNAL-PANEL' })[0]; $ef.Severity = '<img src=x onerror=alert(2)>'
+$eh = ConvertTo-DDHtmlReport -Snapshot (Get-Base) -Analysis $ea -Plan @() -Mode 'Diagnose'
+Test-That 'crafted verdict severity cannot add an attribute' { ($eh -notmatch '" onmouseover="') -and ($eh -match 'class="card Unknown"') -and ($eh -match 'High&quot; onmouseover=&quot;alert\(1\)') }
+Test-That 'crafted finding severity is encoded, not markup' { ($eh -notmatch '<img src=x') -and ($eh -match '&lt;img src=x onerror=alert\(2\)&gt;') }
+Test-That 'known severities keep their class names' { ($html -match 'class="card High"|class="card Medium"|class="card Low"|class="card Info"') -and (ConvertTo-DDSeverityClass 'High') -eq 'High' -and (ConvertTo-DDSeverityClass 'high') -eq 'Unknown' -and (ConvertTo-DDSeverityClass $null) -eq 'Unknown' }
+Test-That 'report carries a restrictive CSP before any content' {
+    $csp = [regex]::Match($html, '<meta http-equiv="Content-Security-Policy" content="([^"]+)">')
+    $csp.Success -and $csp.Groups[1].Value -match "default-src 'none'" -and $csp.Groups[1].Value -notmatch 'script-src' -and
+    $csp.Groups[1].Value -match "base-uri 'none'" -and $csp.Groups[1].Value -match "form-action 'none'" -and $csp.Index -lt $html.IndexOf('<title>') -and $html -notmatch '<script'
+}
 
 Write-Host 'Scenario L: live snapshot from the laptop (2026-11-06, panel working again)' -ForegroundColor Cyan
 # Real Run-Diagnose output, computer name replaced. Regression guard for the first live verdict.

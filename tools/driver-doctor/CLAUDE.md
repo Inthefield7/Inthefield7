@@ -14,7 +14,7 @@ Done = the built-in panel shows the desktop after a normal boot. The proof is `r
 |---|---|
 | **Built-in panel works again (no repair was run by this tool)** | FOUNDER-STATED 2026-11-07; cause UNKNOWN until `Get-DisplayChange.ps1` output is read |
 | Tool built: collect -> analyze -> (repair -> re-verify) -> report | DONE |
-| `tests/Run-Tests.ps1`: 123/123 pass on Windows PowerShell 5.1.26100 and pwsh 7 (the laptop, 2026-11-06) | VERIFIED |
+| `tests/Run-Tests.ps1`: 127/127 pass on Windows PowerShell 5.1.26100 and pwsh 7 (the laptop, 2026-11-06) | VERIFIED |
 | SEC-001 hardening: HP Image Assistant runs only from Program Files with a valid HP Inc. signature; refused copies -> `HPIA-REJECTED` (findings: `C:\Users\erikd\.modernize\driver-doctor\SECURITY_FINDINGS.md`) | VERIFIED by tests + live gate check; real HPIA run NOT DONE |
 | PSScriptAnalyzer 1.25.0 with `PSScriptAnalyzerSettings.psd1` (5.1 compatibility rules): 0 findings for the whole tool (`-Recurse`) on 5.1 (2026-11-06) | VERIFIED |
 | `lib/DisplayConfig.cs` compiles; marshaled sizes 72/64/420 match Win32 | VERIFIED |
@@ -35,7 +35,7 @@ Done = the built-in panel shows the desktop after a normal boot. The proof is `r
 ## Next actions, in order
 
 0. **The panel came back on 2026-11-07.** First, while it still works, the user runs `diagnostics\Get-DisplayChange.ps1` (read-only, elevated). Read the `DisplayChange-*.txt` on the Desktop: collection errors first, then OBSERVATIONS, then the timeline between the last 411/442 and now. Decide the cause only from connected facts: a different GPU INF than `oem39.inf` = new driver; firmware `APPLIED` + BIOS date = capsule applied; neither = no software change found (transient start failure or intermittent hardware, which this data cannot separate). Do not run Repair while the panel works.
-1. Run the tests in **Windows PowerShell 5.1**: `powershell -ExecutionPolicy Bypass -File tests\Run-Tests.ps1`. Expect 123/123. Fix anything that fails only on 5.1.
+1. Run the tests in **Windows PowerShell 5.1**: `powershell -ExecutionPolicy Bypass -File tests\Run-Tests.ps1`. Expect 127/127. Fix anything that fails only on 5.1.
 2. The user runs `Run-Diagnose.cmd` (elevated, read-only). Read `Desktop\DriverDoctor\<ts>\report.html` and `snapshot.json`.
 3. Check `snapshot.json` -> `CollectionErrors` first. Any failed collector is a bug from the first real-hardware run. Fix it before trusting conclusions.
 4. Confirm the real data against the assumptions below; adjust the parsers where they differ.

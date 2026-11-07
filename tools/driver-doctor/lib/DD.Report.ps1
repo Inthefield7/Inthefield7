@@ -6,6 +6,15 @@ function ConvertTo-DDHtml {
     return [System.Net.WebUtility]::HtmlEncode([string]$Text)
 }
 
+function ConvertTo-DDSeverityClass {
+    # SEC-005: a severity becomes a CSS class name. Known values pass through (HTML-encoded, which
+    # leaves them unchanged); anything else, e.g. from a crafted -SnapshotPath, becomes 'Unknown'.
+    param($Severity)
+    $s = [string]$Severity
+    if ($s -cin 'Critical', 'High', 'Medium', 'Low', 'Info') { return (ConvertTo-DDHtml $s) }
+    return 'Unknown'
+}
+
 function ConvertTo-DDHtmlList {
     param([object[]]$Items)
     $items = @($Items | Where-Object { $_ })
@@ -31,7 +40,9 @@ function ConvertTo-DDHtmlReport {
     $sb = New-Object System.Text.StringBuilder
     $null = $sb.Append(@'
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Driver Doctor Report</title>
 <style>
 :root{--bg:#f7f7f5;--card:#fff;--fg:#1d1d1b;--muted:#5f5f5a;--line:#e3e2dd;--crit:#b3261e;--high:#c2541b;--med:#9a6b00;--low:#2f6f9f;--info:#5f5f5a;--ok:#2e7d32}
@@ -58,7 +69,8 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
 
     # Built-in display verdict first: it is the reason this tool exists.
     $null = $sb.Append('<h2>Built-in display</h2>')
-    $null = $sb.Append("<div class=""card $($v.Severity)""><div class=""sev $($v.Severity)"">$($v.Severity) <span class=""tag"">$(ConvertTo-DDHtml $v.Confidence)</span></div>")
+    $vc = ConvertTo-DDSeverityClass $v.Severity
+    $null = $sb.Append("<div class=""card $vc""><div class=""sev $vc"">$(ConvertTo-DDHtml $v.Severity) <span class=""tag"">$(ConvertTo-DDHtml $v.Confidence)</span></div>")
     $null = $sb.Append('<h3>' + (ConvertTo-DDHtml "State: $($v.State)") + '</h3><p>' + (ConvertTo-DDHtml $v.Summary) + '</p>')
     $null = $sb.Append('<p><b>Next:</b> ' + (ConvertTo-DDHtml $v.NextStep) + '</p>')
     $null = $sb.Append('<details><summary>Evidence (' + @($v.Evidence).Count + ')</summary>' + (ConvertTo-DDHtmlList $v.Evidence) + '</details></div>')
@@ -76,7 +88,8 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
     $null = $sb.Append('<h2>Findings</h2>')
     foreach ($f in $findings) {
         if ($f.Id -eq 'INTERNAL-PANEL') { continue }
-        $null = $sb.Append("<div class=""card $($f.Severity)""><div class=""sev $($f.Severity)"">$($f.Severity)<span class=""tag"">$(ConvertTo-DDHtml $f.Confidence)</span><span class=""tag"">$(ConvertTo-DDHtml $f.Category)</span></div>")
+        $fc = ConvertTo-DDSeverityClass $f.Severity
+        $null = $sb.Append("<div class=""card $fc""><div class=""sev $fc"">$(ConvertTo-DDHtml $f.Severity)<span class=""tag"">$(ConvertTo-DDHtml $f.Confidence)</span><span class=""tag"">$(ConvertTo-DDHtml $f.Category)</span></div>")
         $null = $sb.Append('<h3>' + (ConvertTo-DDHtml $f.Title) + '</h3>')
         $null = $sb.Append('<p>' + (ConvertTo-DDHtml $f.Interpretation) + '</p>')
         $null = $sb.Append((ConvertTo-DDHtmlList $f.Evidence))
