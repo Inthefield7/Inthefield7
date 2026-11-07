@@ -318,6 +318,68 @@ if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
     }
 }
 
+Write-Host 'Scenario S7: NEW-6 the remaining console sinks are cleaned; Bonjour lookup ignores HKCU' -ForegroundColor Cyan
+$n6esc = [string][char]27; $n6bel = [string][char]7
+$n6ctl = { param($x) [string]$x -match '[\p{Cc}\p{Cf}]' }
+# WU title in the confirmation prompt: a real -WhatIf run in a child process, so the prompt text is what the user would see.
+$n6exe = (Get-Process -Id $PID).Path
+$n6script = Join-Path ([IO.Path]::GetTempPath()) ('dd-new6-wu-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
+@(
+    "`$dir = '$root'",
+    ". (Join-Path `$dir 'lib\DD.Analysis.ps1'); . (Join-Path `$dir 'lib\DD.Report.ps1'); . (Join-Path `$dir 'lib\DD.Repair.ps1')",
+    "`$t = 'Intel' + [char]27 + '[2JGPU' + [char]27 + ']0;pwned' + [char]7 + ' Display'",
+    "Invoke-DDInstallWindowsUpdate -Action (New-DDAction 'InstallWindowsUpdate' 'u-1' 'x' `$false) -Title `$t -WhatIf | Out-Null"
+) | Set-Content -LiteralPath $n6script -Encoding Ascii
+try {
+    $n6out = & $n6exe -NoProfile -ExecutionPolicy Bypass -File $n6script 2>&1 | Out-String -Width 500
+    Test-That 'NEW-6: the Windows Update title is cleaned before it is shown in the prompt' { $n6out -match 'What if' -and $n6out.Contains('IntelGPU Display') -and $n6out.IndexOf([char]27) -lt 0 -and $n6out.IndexOf([char]7) -lt 0 }
+}
+finally { Remove-Item -LiteralPath $n6script -Force -ErrorAction SilentlyContinue }
+# Test-BonjourLsa.ps1: dot-sourcing stops at its guard, so only its functions and roots load.
+. (Join-Path $root 'diagnostics\Test-BonjourLsa.ps1')
+$blText = [IO.File]::ReadAllText((Join-Path $root 'diagnostics\Test-BonjourLsa.ps1'))
+Test-That 'NEW-6: Bonjour lookup reads only machine-wide (HKLM) uninstall keys, never HKCU' {
+    @($script:BLUninstallRoots).Count -eq 2 -and @($script:BLUninstallRoots | Where-Object { $_ -notmatch '^HKLM:' }).Count -eq 0 -and
+    $blText -notmatch 'HKCU:' -and $blText -match 'foreach \(\$r in \$script:BLUninstallRoots\)'
+}
+$blApps = @(
+    [pscustomobject]@{ Name = ('Bonjour' + $n6esc + '[2J' + $n6esc + ']0;pwned' + $n6bel); Version = ('3.1' + "`r" + 'FAKE'); Publisher = 'Apple Inc.'; InstallDate = '20260101' },
+    [pscustomobject]@{ Name = ('iTunes' + [char]0x202E + 'senutI'); Version = '12'; Publisher = 'Apple Inc.'; InstallDate = '20260101' }
+)
+$blLines = @(Get-BLInstallerLines -Apps $blApps)
+Test-That 'NEW-6: installer lines are cleaned (escape, OSC title, CR, bidi) and keep the facts' {
+    $j = $blLines -join "`n"
+    -not (& $n6ctl ($blLines -join '')) -and $j -match 'Bonjour 3\.1 FAKE \(Apple Inc\.\), installed 20260101' -and $j -match 'same install date: iTunessenutI 12' -and $j -match 'known Bonjour user: iTunessenutI 12'
+}
+Test-That 'NEW-6: no Bonjour entry -> one plain line' { $l = @(Get-BLInstallerLines -Apps @([pscustomobject]@{ Name = 'Foo'; Version = '1'; Publisher = 'x'; InstallDate = '1' })); $l.Count -eq 1 -and $l[0] -match 'No "Bonjour" entry' }
+$wc = @(Write-Check 'test' $true ('ver 1' + $n6esc + '[31m; signer: CN=' + $n6esc + ']2;pwned' + $n6bel + 'Evil' + "`r" + 'HP Inc.') 6>&1 | ForEach-Object { [string]$_ })
+Test-That 'NEW-6: Write-Check detail (certificate subject, event text) is cleaned' { -not (& $n6ctl ($wc -join '')) -and (($wc -join "`n") -match 'ver 1; signer: CN=Evil HP Inc\.') }
+if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
+    . (Join-Path $root 'lib\DD.Collect.ps1')
+    . (Join-Path $root 'lib\DD.Repair.ps1')
+    # HPIA rejection warning: a real file whose name carries a bidi override (NTFS allows it) outside Program Files.
+    $n6hp = Join-Path ([IO.Path]::GetTempPath()) ('dd-new6-' + [char]0x202E + 'HPIA-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.exe')
+    $n6saved = @{}
+    foreach ($n in 'Invoke-DDNative', 'New-DDSecureDirectory') { $n6saved[$n] = (Get-Item "function:$n").ScriptBlock }
+    $n6bk = Join-Path ([IO.Path]::GetTempPath()) ('dd-new6-bk-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    try {
+        Set-Content -LiteralPath $n6hp -Value 'x' -Encoding Ascii
+        $hw = @(Find-DDHPIA -HPIAPath $n6hp 3>&1 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] })
+        Test-That 'NEW-6: the HPIA rejection warning is cleaned (bidi override removed, reason kept)' { $hw.Count -ge 1 -and $hw[0].Message -match 'Not running HP Image Assistant: .*HPIA-.*not under Program Files' -and -not (& $n6ctl $hw[0].Message) }
+        # pnputil export failure: the native tool's text is cleaned in the warning.
+        function Invoke-DDNative { if (@($args[1])[0] -eq '/export-driver') { [pscustomobject]@{ ExitCode = 1; Output = ('Access' + [char]27 + '[31m denied' + "`r" + 'FAKE OK') } } else { [pscustomobject]@{ ExitCode = 0; Output = 'stub' } } }
+        function New-DDSecureDirectory { [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')] param([string]$Path) New-Item -ItemType Directory -Path $Path | Out-Null }
+        $bw = @(Backup-DDDrivers -Devices @([pscustomobject]@{ DriverInf = 'oem39.inf' }) -Folder $n6bk 3>&1 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] })
+        Test-That 'NEW-6: the pnputil export warning is cleaned (color code removed, CR cannot overwrite the line)' { $bw.Count -eq 1 -and $bw[0].Message -match '^Could not export oem39\.inf: Access denied FAKE OK' -and -not (& $n6ctl $bw[0].Message) }
+    }
+    finally {
+        foreach ($n in $n6saved.Keys) { Set-Item "function:$n" $n6saved[$n] }
+        Remove-Item -LiteralPath $n6hp -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $n6bk -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+else { Write-Host '  SKIP HPIA and pnputil warning sinks (Windows only)' -ForegroundColor Yellow }
+
 Write-Host 'Scenario S6: NEW-5 a restart that flashes staged firmware is power-gated' -ForegroundColor Cyan
 # Analysis marks restart actions firmware when a capsule would flash on the next restart.
 # The base fixture has a code-14 UEFI capsule device (UEFI\RES_{F9A422C9...}), so a staged capsule is present.
@@ -643,6 +705,20 @@ Test-That 'live: GPU same-boot link still cites the 442 it relies on, by its own
 
 Write-Host 'Display change diagnostic' -ForegroundColor Cyan
 . (Join-Path $root 'diagnostics\Get-DisplayChange.ps1')
+# NEW-6: the observation lines reach the console through Write-DCObservations, which cleans them.
+$dcSt = [pscustomobject]@{
+    Gpus           = @([pscustomobject]@{ Name = ('Intel' + $n6esc + '[2J' + $n6bel + 'GPU'); InstanceId = $gpuId; Present = $true; Status = 'OK'; Problem = 0; Inf = 'oem39.inf'; Version = '1'; Date = '2026-10-01' })
+    Monitors       = @()
+    ActiveMonitors = @()
+    Firmware       = @()
+    Bios           = [pscustomobject]@{ Version = 'F.10'; ReleaseDate = '2026-09-15' }
+    Os             = [pscustomobject]@{ LastBoot = '2026-11-07 09:00:00' }
+    FastStartup    = $false
+    PnpRead        = $true
+    Timeline       = @()
+}
+$dcOut = @(Write-DCObservations -State $dcSt 6>&1 | ForEach-Object { [string]$_ })
+Test-That 'NEW-6: observation lines are cleaned before they reach the console' { $dcOut.Count -ge 1 -and -not (& $n6ctl ($dcOut -join '')) -and (($dcOut -join "`n") -match "GPU 'IntelGPU': status OK") }
 $setupLog = @(
     '>>>  [Device Install (Hardware initiated) - PCI\VEN_8086&DEV_7D45&SUBSYS_8C66103C&REV_08\3&11583659&0&10]',
     '>>>  Section start 2026/11/06 21:14:03.512',

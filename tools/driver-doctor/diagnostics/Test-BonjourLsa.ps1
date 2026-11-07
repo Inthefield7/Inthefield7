@@ -16,16 +16,41 @@
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\Test-BonjourLsa.ps1
 #>
-$ErrorActionPreference = 'Continue'
-$links = [ordered]@{}
+# NEW-6: ConvertTo-DDConsoleText strips escape sequences and control characters from text that comes
+# from the registry, certificates and event logs before it reaches the console.
+. (Join-Path (Split-Path $PSScriptRoot -Parent) 'lib\DD.Report.ps1')
+
+# NEW-6: machine-wide uninstall keys only (administrators write them). HKCU is the user's own hive, so a
+# fake "Bonjour" entry there could change this verdict; it is not read.
+$script:BLUninstallRoots = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')
 
 function Write-Check {
     param([string]$Name, [bool]$Ok, [string]$Detail)
     $tag = if ($Ok) { '[YES]' } else { '[NO] ' }
     $color = if ($Ok) { 'Green' } else { 'Yellow' }
     Write-Host ("{0} {1}" -f $tag, $Name) -ForegroundColor $color
-    if ($Detail) { Write-Host "      $Detail" }
+    if ($Detail) { Write-Host "      $(ConvertTo-DDConsoleText $Detail)" }
 }
+
+function Get-BLInstallerLines {
+    # Pure: the "Installed by" lines for the installed-programs list, cleaned for the console (NEW-6).
+    param([object[]]$Apps)
+    $all = @($Apps)
+    $bonjour = $all | Where-Object { [string]$_.Name -match '(?i)^Bonjour' } | Select-Object -First 1
+    if (-not $bonjour) { 'No "Bonjour" entry in installed programs.'; return }
+    ConvertTo-DDConsoleText "Bonjour $($bonjour.Version) ($($bonjour.Publisher)), installed $($bonjour.InstallDate)"
+    $sameDay = @($all | Where-Object { $_.InstallDate -and $_.InstallDate -eq $bonjour.InstallDate -and [string]$_.Name -notmatch '(?i)^Bonjour' })
+    foreach ($a in $sameDay) { ConvertTo-DDConsoleText "same install date: $($a.Name) $($a.Version) ($($a.Publisher))  <- likely brought Bonjour" }
+    $knownHosts = @($all | Where-Object { [string]$_.Name -match '(?i)iTunes|iCloud|Apple Software Update|Apple Mobile Device|Creative Cloud|Photoshop|Autodesk|AirPrint' })
+    foreach ($a in $knownHosts) { ConvertTo-DDConsoleText "known Bonjour user: $($a.Name) $($a.Version)" }
+    if ($sameDay.Count -eq 0 -and $knownHosts.Count -eq 0) { 'No installed app is connected to Bonjour by install date or by known use.' }
+}
+
+# Dot-sourced (tests): stop here, functions only.
+if ($MyInvocation.InvocationName -eq '.') { return }
+
+$ErrorActionPreference = 'Continue'
+$links = [ordered]@{}
 
 # 1. The DLL and its signer
 $dll = Join-Path $env:ProgramFiles 'Bonjour\mdnsNSP.dll'
@@ -80,26 +105,17 @@ if ($ci.Count -gt 0) {
 }
 Write-Check '4. Code Integrity logged the block' $links['ci'] $ciDetail
 
-# 5. What installed Bonjour
+# 5. What installed Bonjour (NEW-6: machine-wide keys only, see $script:BLUninstallRoots; console text cleaned)
 $apps = @()
-foreach ($r in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall', 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall') {
+foreach ($r in $script:BLUninstallRoots) {
     foreach ($k in (Get-ChildItem -LiteralPath $r -ErrorAction SilentlyContinue)) {
         $p = Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction SilentlyContinue
         if ($p.DisplayName) { $apps += [pscustomobject]@{ Name = $p.DisplayName; Version = $p.DisplayVersion; Publisher = $p.Publisher; InstallDate = $p.InstallDate } }
     }
 }
-$bonjour = $apps | Where-Object { $_.Name -match '(?i)^Bonjour' } | Select-Object -First 1
 Write-Host ''
 Write-Host '5. Installed by:' -ForegroundColor Cyan
-if ($bonjour) {
-    Write-Host "      Bonjour $($bonjour.Version) ($($bonjour.Publisher)), installed $($bonjour.InstallDate)"
-    $sameDay = @($apps | Where-Object { $_.InstallDate -and $_.InstallDate -eq $bonjour.InstallDate -and $_.Name -notmatch '(?i)^Bonjour' })
-    foreach ($a in $sameDay) { Write-Host "      same install date: $($a.Name) $($a.Version) ($($a.Publisher))  <- likely brought Bonjour" }
-    $knownHosts = @($apps | Where-Object { $_.Name -match '(?i)iTunes|iCloud|Apple Software Update|Apple Mobile Device|Creative Cloud|Photoshop|Autodesk|AirPrint' })
-    foreach ($a in $knownHosts) { Write-Host "      known Bonjour user: $($a.Name) $($a.Version)" }
-    if ($sameDay.Count -eq 0 -and $knownHosts.Count -eq 0) { Write-Host '      No installed app is connected to Bonjour by install date or by known use.' }
-}
-else { Write-Host '      No "Bonjour" entry in installed programs.' }
+foreach ($l in @(Get-BLInstallerLines -Apps $apps)) { Write-Host "      $l" }
 $svc = Get-Service -Name 'Bonjour Service' -ErrorAction SilentlyContinue
 if ($svc) { Write-Host "      Bonjour Service: $($svc.Status), start type $($svc.StartType)" }
 

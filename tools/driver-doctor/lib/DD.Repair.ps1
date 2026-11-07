@@ -54,7 +54,7 @@ function Backup-DDDrivers {
         $dest = Join-Path $Folder ($inf -replace '\.inf$', '')
         New-DDSecureDirectory $dest
         $r = Invoke-DDNative 'pnputil.exe' @('/export-driver', $inf, $dest)
-        if ($r.ExitCode -eq 0) { $ok += $inf } else { Write-Warning "Could not export ${inf}: $($r.Output)" }
+        if ($r.ExitCode -eq 0) { $ok += $inf } else { Write-Warning "Could not export ${inf}: $(ConvertTo-DDConsoleText $r.Output)" }   # NEW-6: pnputil text is cleaned
     }
     return $ok
 }
@@ -146,7 +146,8 @@ function Invoke-DDInstallWindowsUpdate {
         if (-not $gate[0]) { return (New-DDResult $Action 'Skipped' "Firmware safety gate: $($gate[1])") }
         Write-DDBitLockerWarning
     }
-    if (-not $PSCmdlet.ShouldProcess($Title, 'Download and install from Windows Update')) { return (New-DDResult $Action 'Declined' '') }
+    # NEW-6: the title is Windows Update's own text; clean it before it is shown in the confirmation prompt.
+    if (-not $PSCmdlet.ShouldProcess((ConvertTo-DDConsoleText $Title), 'Download and install from Windows Update')) { return (New-DDResult $Action 'Declined' '') }
     try {
         $session = New-Object -ComObject Microsoft.Update.Session
         $search = $session.CreateUpdateSearcher().Search("UpdateID='$($Action.Target)'")

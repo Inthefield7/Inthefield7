@@ -369,7 +369,8 @@ function Find-DDHPIA {
         if ($why) { $rejected.Add("$c - $why"); continue }
         return [pscustomobject]@{ Path = $c; Rejected = @($rejected) }
     }
-    foreach ($x in $rejected) { Write-Warning "Not running HP Image Assistant: $x" }
+    # NEW-6: the reason carries a file path and a certificate subject; clean it before it reaches the console.
+    foreach ($x in $rejected) { Write-Warning "Not running HP Image Assistant: $(ConvertTo-DDConsoleText $x)" }
     return [pscustomobject]@{ Path = $null; Rejected = @($rejected) }
 }
 

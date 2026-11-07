@@ -24,6 +24,7 @@ param(
 )
 
 . (Join-Path (Split-Path $PSScriptRoot -Parent) 'lib\DD.Analysis.ps1')
+. (Join-Path (Split-Path $PSScriptRoot -Parent) 'lib\DD.Report.ps1')   # ConvertTo-DDConsoleText (NEW-6)
 
 # What the 2026-08-26 Event Viewer screenshots showed (VERIFIED from the screenshots).
 $script:DCBaseline = @{
@@ -179,6 +180,12 @@ function Get-DCObservations {
     $boot = @($State.Timeline | Where-Object { $_.Source -eq 'Kernel-Boot' } | Sort-Object Time) | Select-Object -Last 1
     if ($boot) { $out.Add(("Most recent boot record: {0:yyyy-MM-dd HH:mm:ss} {1}" -f $boot.Time, $boot.Text)) }
     return $out
+}
+
+function Write-DCObservations {
+    # NEW-6: observation lines carry device names and event text; clean them before they reach the console.
+    param($State)
+    foreach ($o in @(Get-DCObservations -State $State)) { Write-Host (ConvertTo-DDConsoleText $o) }
 }
 
 # Dot-sourced (tests): stop here, functions only.
@@ -359,7 +366,7 @@ elseif (-not $OutputPath) { $OutputPath = Join-Path ([Environment]::GetFolderPat
 $lines | Set-Content -LiteralPath $OutputPath -Encoding UTF8
 Write-Host ''
 Write-Host '== OBSERVATIONS ==' -ForegroundColor Cyan
-foreach ($o in @(Get-DCObservations -State $state)) { Write-Host $o }
+Write-DCObservations -State $state
 if ($state.Errors.Count -gt 0) { Write-Host ''; Write-Host ('{0} collection error(s); see the file.' -f $state.Errors.Count) -ForegroundColor Yellow }
 Write-Host ''
 Write-Host "Full report: $OutputPath" -ForegroundColor Green
