@@ -234,9 +234,37 @@ function Get-DDPendingRestart {
     }
 }
 
+function Invoke-DDWithPrivateTemp {
+    # NEW-3: Windows PowerShell's Add-Type writes the .cs, .cmdline and .dll to %TEMP% and compiles them
+    # there. For an elevated session that is still the user's own Temp, where any process running as the
+    # user could swap a file between the write and the compile or load, and its code would run as
+    # administrator. Run the body with TMP and TEMP pointed at a fresh administrators-only folder (the
+    # same mechanism as the HPIA and driver-backup folders), then restore them and remove the folder.
+    # Not elevated: there is no privilege boundary to protect, so the body runs with the normal Temp.
+    # No safe folder: throws before the body runs (fail closed), never falls back to the user's Temp.
+    # -Root exists for tests only.
+    param([scriptblock]$Body, [string]$Root)
+    if (-not (Test-DDIsAdmin)) { return (& $Body) }
+    $dir = if ($Root) { Get-DDAdminWorkDir -Root $Root } else { Get-DDAdminWorkDir }
+    $oldTmp = $env:TMP
+    $oldTemp = $env:TEMP
+    try {
+        $env:TMP = $dir
+        $env:TEMP = $dir
+        & $Body
+    }
+    finally {
+        $env:TMP = $oldTmp
+        $env:TEMP = $oldTemp
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Import-DDDisplayConfig {
     if (-not ('DriverDoctor.DisplayConfigReader' -as [type])) {
-        Add-Type -TypeDefinition (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'DisplayConfig.cs')) -ErrorAction Stop
+        # NEW-3: the only compile in the tool; it runs with a private, administrators-only Temp.
+        $src = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'DisplayConfig.cs')
+        Invoke-DDWithPrivateTemp -Body { Add-Type -TypeDefinition $src -ErrorAction Stop }.GetNewClosure()
     }
 }
 

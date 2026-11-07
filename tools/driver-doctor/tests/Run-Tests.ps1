@@ -318,6 +318,51 @@ if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
     }
 }
 
+Write-Host 'Scenario S8: NEW-3 Add-Type compiles with TMP/TEMP in a fresh administrators-only folder' -ForegroundColor Cyan
+if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
+    . (Join-Path $root 'lib\DD.Collect.ps1')
+    $n3same = { param($a, $b) [string]::Equals([string]$a, [string]$b, [System.StringComparison]::Ordinal) }
+    $n3tmp0 = $env:TMP; $n3temp0 = $env:TEMP
+    $n3saved = @{}
+    foreach ($n in 'Test-DDIsAdmin', 'Get-DDAdminWorkDir') { $n3saved[$n] = (Get-Item "function:$n").ScriptBlock }
+    try {
+        # Not elevated: no boundary to protect; the body runs with the normal Temp and nothing is created.
+        function Test-DDIsAdmin { $false }
+        $script:n3calls = 0
+        $n3seen = Invoke-DDWithPrivateTemp { $script:n3calls++; $env:TEMP }
+        Test-That 'NEW-3: not elevated -> body runs once with the normal Temp, environment untouched' { $script:n3calls -eq 1 -and (& $n3same $n3seen $n3temp0) -and (& $n3same $env:TMP $n3tmp0) -and (& $n3same $env:TEMP $n3temp0) }
+        # Elevated but no safe folder: fail closed. The body never runs, Temp is untouched, the reason propagates.
+        function Test-DDIsAdmin { $true }
+        function Get-DDAdminWorkDir { throw 'stub: root is a junction' }
+        $script:n3calls = 0; $n3msg = ''
+        try { Invoke-DDWithPrivateTemp { $script:n3calls++ } | Out-Null } catch { $n3msg = $_.Exception.Message }
+        Test-That 'NEW-3: elevated with no safe folder -> body not run, Temp untouched, the error propagates' { $script:n3calls -eq 0 -and $n3msg -match 'stub: root is a junction' -and (& $n3same $env:TMP $n3tmp0) -and (& $n3same $env:TEMP $n3temp0) }
+    }
+    finally { foreach ($n in $n3saved.Keys) { Set-Item "function:$n" $n3saved[$n] } }
+    $n3elev = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($n3elev) {
+        $n3root = Join-Path ([IO.Path]::GetTempPath()) ('dd-new3-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        try {
+            $n3in = Invoke-DDWithPrivateTemp -Root $n3root -Body { [pscustomobject]@{ Tmp = $env:TMP; Temp = $env:TEMP; Acl = (Get-Acl -LiteralPath $env:TEMP).Sddl; Exists = (Test-Path -LiteralPath $env:TEMP) } }
+            Test-That 'NEW-3: elevated -> TMP and TEMP point at one fresh administrators-only folder during the body' { $n3in.Exists -and (& $n3same $n3in.Tmp $n3in.Temp) -and $n3in.Temp -like "$n3root\*" -and -not (& $n3same $n3in.Temp $n3temp0) -and (Test-DDAdminOnlySddl $n3in.Acl) }
+            Test-That 'NEW-3: elevated -> TMP and TEMP are restored and the folder is removed afterwards' { (& $n3same $env:TMP $n3tmp0) -and (& $n3same $env:TEMP $n3temp0) -and -not (Test-Path -LiteralPath $n3in.Temp) }
+            $n3thrown = $false
+            try { Invoke-DDWithPrivateTemp -Root $n3root -Body { throw 'body failed' } | Out-Null } catch { $n3thrown = $true }
+            Test-That 'NEW-3: a failing body still restores TMP and TEMP and removes the folder' { $n3thrown -and (& $n3same $env:TMP $n3tmp0) -and (& $n3same $env:TEMP $n3temp0) -and @(Get-ChildItem -LiteralPath $n3root -Force).Count -eq 0 }
+        }
+        finally { Remove-Item -LiteralPath $n3root -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    else { Write-Host '  SKIP elevated private-temp folder (not running as administrator)' -ForegroundColor Yellow }
+    # The tool's only compile goes through the wrapper, and the compile works through it.
+    $n3text = [IO.File]::ReadAllText((Join-Path $root 'lib\DD.Collect.ps1'))
+    Test-That 'NEW-3: Import-DDDisplayConfig is the only Add-Type and it runs inside Invoke-DDWithPrivateTemp' { $n3text -match '(?s)function Import-DDDisplayConfig \{.*?Invoke-DDWithPrivateTemp.*?Add-Type -TypeDefinition' -and @([regex]::Matches($n3text, 'Add-Type -')).Count -eq 1 }   # invocations only; comments also say "Add-Type"
+    $n3pd = Join-Path $env:ProgramData 'DriverDoctor'; $n3pdExisted = Test-Path -LiteralPath $n3pd
+    Import-DDDisplayConfig
+    Test-That 'NEW-3: DisplayConfig.cs compiles through the wrapper and TMP/TEMP are back' { ($null -ne ('DriverDoctor.DisplayConfigReader' -as [type])) -and (& $n3same $env:TMP $n3tmp0) -and (& $n3same $env:TEMP $n3temp0) }
+    if (-not $n3pdExisted -and (Test-Path -LiteralPath $n3pd)) { [IO.Directory]::Delete($n3pd, $true) }
+}
+else { Write-Host '  SKIP NEW-3 private temp (Windows only)' -ForegroundColor Yellow }
+
 Write-Host 'Scenario S7: NEW-6 the remaining console sinks are cleaned; Bonjour lookup ignores HKCU' -ForegroundColor Cyan
 $n6esc = [string][char]27; $n6bel = [string][char]7
 $n6ctl = { param($x) [string]$x -match '[\p{Cc}\p{Cf}]' }
