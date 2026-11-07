@@ -177,6 +177,27 @@ $html = ConvertTo-DDHtmlReport -Snapshot $evil -Analysis (Invoke-DDAnalysis -Sna
 Test-That 'device names are HTML-encoded' { ($html -notmatch '<script>alert') -and ($html -match '&lt;script&gt;') }
 Test-That 'report leads with the built-in display verdict' { $html.IndexOf('Built-in display') -lt $html.IndexOf('<h2>Findings') }
 
+Write-Host 'Scenario L: live snapshot from the laptop (2026-11-06, panel working again)' -ForegroundColor Cyan
+# Real Run-Diagnose output, computer name replaced. Regression guard for the first live verdict.
+$liveRaw = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $fixtures 'envy-live.snapshot.json')
+$liveSnap = $liveRaw | ConvertFrom-Json
+$la = Invoke-DDAnalysis -Snapshot $liveSnap
+$lplan = @(Get-DDRepairPlan -Findings $la.Findings)
+Test-That 'live: fixture is redacted and had no collection errors' { ($liveRaw -notmatch '(?i)ENVY7') -and ($liveSnap.Meta.ComputerName -eq 'REDACTED-PC') -and (@($liveSnap.CollectionErrors).Count -eq 0) }
+Test-That 'live: verdict Active, VERIFIED' { $la.Verdict.State -eq 'Active' -and $la.Verdict.Confidence -eq 'VERIFIED' }
+Test-That 'live: verdict evidence = active internal path + present CMN163B panel' {
+    $ev = $la.Verdict.Evidence -join "`n"
+    ($ev -match 'internal connector.*active=True') -and ($ev -match 'DISPLAY\\CMN163B\\4&5423816&E&UID8388688.*present=True, problem code=0')
+}
+Test-That 'live: 2026-08-26 GPU failure is Low history, not a current fault' {
+    $gpu = @($la.Findings | Where-Object { ($_.Evidence -join ' ') -match 'oem39\.inf' -and $_.Title -match '^GPU' })
+    $gpu.Count -eq 1 -and $gpu[0].Severity -eq 'Low' -and $gpu[0].Category -eq 'History' -and -not $gpu[0].StateBased -and @($gpu[0].Actions).Count -eq 0
+}
+Test-That 'live: no Critical finding and no High finding about the GPU or display' { @($la.Findings | Where-Object { $_.Severity -eq 'Critical' -or ($_.Severity -eq 'High' -and $_.Category -in 'Display', 'History') -or ($_.Severity -eq 'High' -and $_.Title -match 'Graphics|DEV_7D45|Monitor') }).Count -eq 0 }
+Test-That 'live: plan touches neither the display nor the GPU' { @($lplan | Where-Object { $_.Type -in 'ExtendTopology', 'EnableDevice', 'SetBrightness' -or "$($_.Target)" -match 'DEV_7D45|DISPLAY\\' }).Count -eq 0 }
+Test-That 'live: plan never uninstalls, disables or deletes' { @($lplan | Where-Object { $_.Type -match 'Uninstall|Disable|Delete|Remove' }).Count -eq 0 }
+Test-That 'live: un-applied firmware capsule still reported (working panel hides nothing)' { @($la.Findings | Where-Object { $_.Category -eq 'Firmware' -and $_.Severity -eq 'High' -and $_.Title -match 'F9A422C9' }).Count -eq 1 }
+
 Write-Host 'Display change diagnostic' -ForegroundColor Cyan
 . (Join-Path $root 'diagnostics\Get-DisplayChange.ps1')
 $setupLog = @(

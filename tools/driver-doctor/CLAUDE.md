@@ -14,12 +14,13 @@ Done = the built-in panel shows the desktop after a normal boot. The proof is `r
 |---|---|
 | **Built-in panel works again (no repair was run by this tool)** | FOUNDER-STATED 2026-11-07; cause UNKNOWN until `Get-DisplayChange.ps1` output is read |
 | Tool built: collect -> analyze -> (repair -> re-verify) -> report | DONE |
-| `tests/Run-Tests.ps1`: 84/84 pass on Windows PowerShell 5.1.26100 and pwsh 7.6 (the laptop, 2026-11-06) | VERIFIED |
+| `tests/Run-Tests.ps1`: 92/92 pass on Windows PowerShell 5.1.26100 (the laptop, 2026-11-06) | VERIFIED |
 | PSScriptAnalyzer: 0 findings against Windows PowerShell 5.1 and 7.0 profiles | VERIFIED |
 | `lib/DisplayConfig.cs` compiles; marshaled sizes 72/64/420 match Win32 | VERIFIED |
 | Restored to git on 2026-11-04 from the session record after a container reset; the replay reproduced the original 57/2 and 63/63 checkpoints and the final 66/66 | VERIFIED |
 | Tests under **Windows PowerShell 5.1** | VERIFIED 2026-11-06 (fixed: Repair-refusal test threw NativeCommandError under 'Stop') |
-| Live collectors and repair actions on real Windows | NOT RUN - never executed on hardware |
+| Live Diagnose collectors on real Windows | VERIFIED 2026-11-06: elevated run, `CollectionErrors` empty, verdict `Active` [VERIFIED]; saved as `tests/fixtures/envy-live.snapshot.json` (computer name -> `REDACTED-PC`) |
+| Repair actions on real Windows | NOT RUN - never executed on hardware (do not run while the panel works) |
 | HP logo / F2 hardware check | NOT DONE - user must do it |
 
 ## Evidence so far (Event Viewer screenshots, 2026-08-26, local time)
@@ -33,13 +34,13 @@ Done = the built-in panel shows the desktop after a normal boot. The proof is `r
 ## Next actions, in order
 
 0. **The panel came back on 2026-11-07.** First, while it still works, the user runs `diagnostics\Get-DisplayChange.ps1` (read-only, elevated). Read the `DisplayChange-*.txt` on the Desktop: collection errors first, then OBSERVATIONS, then the timeline between the last 411/442 and now. Decide the cause only from connected facts: a different GPU INF than `oem39.inf` = new driver; firmware `APPLIED` + BIOS date = capsule applied; neither = no software change found (transient start failure or intermittent hardware, which this data cannot separate). Do not run Repair while the panel works.
-1. Run the tests in **Windows PowerShell 5.1**: `powershell -ExecutionPolicy Bypass -File tests\Run-Tests.ps1`. Expect 84/84. Fix anything that fails only on 5.1.
+1. Run the tests in **Windows PowerShell 5.1**: `powershell -ExecutionPolicy Bypass -File tests\Run-Tests.ps1`. Expect 92/92. Fix anything that fails only on 5.1.
 2. The user runs `Run-Diagnose.cmd` (elevated, read-only). Read `Desktop\DriverDoctor\<ts>\report.html` and `snapshot.json`.
 3. Check `snapshot.json` -> `CollectionErrors` first. Any failed collector is a bug from the first real-hardware run. Fix it before trusting conclusions.
 4. Confirm the real data against the assumptions below; adjust the parsers where they differ.
 5. The user does the hardware check: external monitor unplugged, power on. If the HP logo shows on the panel, the problem is software. If the screen is black, use F2 > Component Tests > Video.
 6. `DriverDoctor.ps1 -Mode Repair -WhatIf`, then review the plan with the user. Only then `Run-Repair.cmd`. The user answers every prompt.
-7. Save the real `snapshot.json` as `tests/fixtures/envy-live.snapshot.json`. Replace the computer name first. Add regression tests for its verdict.
+7. DONE 2026-11-06: `tests/fixtures/envy-live.snapshot.json` (computer name replaced) and "Scenario L" tests pin its verdict `Active`, the GPU history as Low, a plan that never touches the display or GPU, and the still-unapplied firmware capsule.
 
 ## Unverified assumptions (check against the first live snapshot)
 
