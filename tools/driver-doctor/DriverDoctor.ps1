@@ -39,7 +39,9 @@ param(
     [ValidateRange(1, 3650)]
     [int]$Days = 180,
 
-    # Report folder. Default: Desktop\DriverDoctor\<timestamp>
+    # Report folder, for runs WITHOUT administrator rights. Default: Desktop\DriverDoctor\<timestamp>.
+    # An administrator run refuses it and writes to a new administrators-only folder under
+    # %ProgramData%\DriverDoctor instead (printed at the end).
     [string]$OutputPath,
 
     [switch]$SkipWindowsUpdate,
@@ -69,12 +71,23 @@ $onWindows = ($PSVersionTable.PSEdition -eq 'Desktop') -or ($IsWindows -eq $true
 if ($Mode -eq 'Repair' -and $SnapshotPath) { throw 'Repair works on the live computer only; it cannot be combined with -SnapshotPath.' }
 if (-not $SnapshotPath -and -not $onWindows) { throw 'Live collection needs Windows. Use -SnapshotPath to analyze a saved snapshot.' }
 
-$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-if (-not $OutputPath) {
-    $base = if ($onWindows) { [Environment]::GetFolderPath('Desktop') } else { (Get-Location).Path }
-    $OutputPath = Join-Path (Join-Path $base 'DriverDoctor') $stamp
+$elevated = $false
+if ($onWindows) { $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
+if ($elevated) {
+    # NEW-2: as administrator, never write into a folder the user chose or controls (see
+    # Get-DDElevatedOutputDir). Run without administrator rights to use -OutputPath.
+    if ($OutputPath) { throw '-OutputPath is not accepted when running as administrator: the report goes to a new administrators-only folder under %ProgramData%\DriverDoctor (printed at the end). Run from a normal PowerShell window to choose the folder.' }
+    . (Join-Path $libDir 'DD.Collect.ps1')
+    $OutputPath = Get-DDElevatedOutputDir
 }
-New-Item -ItemType Directory -Force -Path $OutputPath -WhatIf:$false | Out-Null
+else {
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    if (-not $OutputPath) {
+        $base = if ($onWindows) { [Environment]::GetFolderPath('Desktop') } else { (Get-Location).Path }
+        $OutputPath = Join-Path (Join-Path $base 'DriverDoctor') $stamp
+    }
+    New-Item -ItemType Directory -Force -Path $OutputPath -WhatIf:$false | Out-Null
+}
 $transcript = $false
 # Reports are always written, even under -WhatIf (which only governs system changes).
 try { Start-Transcript -Path (Join-Path $OutputPath 'console-log.txt') -Force -WhatIf:$false | Out-Null; $transcript = $true }
@@ -143,7 +156,11 @@ try {
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $OutputPath 'findings.json') -Encoding UTF8 -WhatIf:$false
 
     Write-Host "`nReport: $reportPath" -ForegroundColor Green
-    if (-not $NoOpen -and $onWindows) { & { $WhatIfPreference = $false; Start-Process $reportPath } }
+    # NEW-1: an administrator process never opens the report. ShellExecute would pick the browser
+    # through HKCU\Software\Classes, which any program running as the user can redirect, and the
+    # browser itself would run as administrator. Open it from File Explorer instead.
+    if ($elevated) { Write-Host 'It is not opened automatically from an administrator window. Paste the folder path above into File Explorer''s address bar (ProgramData is a hidden folder) and open report.html from there.' -ForegroundColor Green }
+    elseif (-not $NoOpen -and $onWindows) { & { $WhatIfPreference = $false; Start-Process $reportPath } }
 }
 finally {
     if ($transcript) { try { Stop-Transcript | Out-Null } catch { Write-Verbose 'Transcript already stopped.' } }

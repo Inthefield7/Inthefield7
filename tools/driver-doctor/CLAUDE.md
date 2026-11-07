@@ -14,7 +14,8 @@ Done = the built-in panel shows the desktop after a normal boot. The proof is `r
 |---|---|
 | **Built-in panel works again (no repair was run by this tool)** | FOUNDER-STATED 2026-11-07; cause UNKNOWN until `Get-DisplayChange.ps1` output is read |
 | Tool built: collect -> analyze -> (repair -> re-verify) -> report | DONE |
-| `tests/Run-Tests.ps1`: 159/159 pass on Windows PowerShell 5.1.26100 and pwsh 7 (the laptop, elevated, 2026-11-07) | VERIFIED |
+| `tests/Run-Tests.ps1`: 166/166 pass on Windows PowerShell 5.1.26100 and pwsh 7 (the laptop, elevated, 2026-11-07) | VERIFIED |
+| Second harden pass (NEW-1, NEW-2, NEW-4): an elevated run writes report/snapshot/findings/log to a fresh admin-only `%ProgramData%\DriverDoctor\<ts>` folder the user can read, never the Desktop; it never opens the report itself (HKCU ProgID hijack); the work-folder root must be owned by SYSTEM/Administrators. `Get-DisplayChange.ps1` elevated does the same | VERIFIED by tests (elevated, end to end on a snapshot) + 7/7 mutants |
 | SEC-003 hardening: `Run-*.cmd` pass their own path to the elevation command through `DD_SELF`, never inside PowerShell quotes; README says to run from an admin-only folder (`C:\Program Files\DriverDoctor`) | VERIFIED by tests (real launcher run from a folder named with `' $ & ( ) ;`) + 3/3 mutants; a real UAC prompt NOT re-tested |
 | SEC-002 hardening: HPIA reports, SoftPaqs and the Repair driver backup go to a fresh `%ProgramData%\DriverDoctor\<ts>` folder that only SYSTEM/Administrators can change (refused if the root is a junction or user-writable; Repair stops before any change if the backup folder can't be made) | VERIFIED by tests (elevated) + 9/9 and 5/5 mutants; real HPIA run and real Repair NOT DONE |
 | SEC-001 hardening: HP Image Assistant runs only from Program Files with a valid HP Inc. signature; refused copies -> `HPIA-REJECTED` (findings: `C:\Users\erikd\.modernize\driver-doctor\SECURITY_FINDINGS.md`) | VERIFIED by tests + live gate check; real HPIA run NOT DONE |
@@ -36,9 +37,9 @@ Done = the built-in panel shows the desktop after a normal boot. The proof is `r
 
 ## Next actions, in order
 
-0. **The panel came back on 2026-11-07.** First, while it still works, the user runs `diagnostics\Get-DisplayChange.ps1` (read-only, elevated). Read the `DisplayChange-*.txt` on the Desktop: collection errors first, then OBSERVATIONS, then the timeline between the last 411/442 and now. Decide the cause only from connected facts: a different GPU INF than `oem39.inf` = new driver; firmware `APPLIED` + BIOS date = capsule applied; neither = no software change found (transient start failure or intermittent hardware, which this data cannot separate). Do not run Repair while the panel works.
-1. Run the tests in **Windows PowerShell 5.1**: `powershell -ExecutionPolicy Bypass -File tests\Run-Tests.ps1`. Expect 159/159 elevated (154 when not elevated: 5 work-folder and backup-folder tests are skipped). Fix anything that fails only on 5.1.
-2. The user runs `Run-Diagnose.cmd` (elevated, read-only). Read `Desktop\DriverDoctor\<ts>\report.html` and `snapshot.json`.
+0. **The panel came back on 2026-11-07.** First, while it still works, the user runs `diagnostics\Get-DisplayChange.ps1` (read-only, elevated). Read the `DisplayChange-*.txt` it prints at the end (elevated: in a new `%ProgramData%\DriverDoctor\<ts>` folder): collection errors first, then OBSERVATIONS, then the timeline between the last 411/442 and now. Decide the cause only from connected facts: a different GPU INF than `oem39.inf` = new driver; firmware `APPLIED` + BIOS date = capsule applied; neither = no software change found (transient start failure or intermittent hardware, which this data cannot separate). Do not run Repair while the panel works.
+1. Run the tests in **Windows PowerShell 5.1**: `powershell -ExecutionPolicy Bypass -File tests\Run-Tests.ps1`. Expect 166/166 elevated (156 when not elevated: 5 work-folder and backup-folder tests are skipped). Fix anything that fails only on 5.1.
+2. The user runs `Run-Diagnose.cmd` (elevated, read-only). Read `%ProgramData%\DriverDoctor\<ts>\report.html` and `snapshot.json` (the path is printed at the end; nothing goes to the Desktop from an elevated run).
 3. Check `snapshot.json` -> `CollectionErrors` first. Any failed collector is a bug from the first real-hardware run. Fix it before trusting conclusions.
 4. Confirm the real data against the assumptions below; adjust the parsers where they differ.
 5. The user does the hardware check: external monitor unplugged, power on. If the HP logo shows on the panel, the problem is software. If the screen is black, use F2 > Component Tests > Video.
@@ -97,4 +98,4 @@ Optional: `Invoke-ScriptAnalyzer -Path . -Recurse -Settings .\PSScriptAnalyzerSe
 
 ## Kickoff prompt for the local session
 
-> Read CLAUDE.md. Run the test suite in Windows PowerShell 5.1 and fix any 5.1-only failures. Then wait while I run Run-Diagnose.cmd, and analyze the newest Desktop\DriverDoctor\*\snapshot.json and report.html: collection errors first, then the built-in display verdict and its evidence. Do not run Repair or change system state without my approval.
+> Read CLAUDE.md. Run the test suite in Windows PowerShell 5.1 and fix any 5.1-only failures. Then wait while I run Run-Diagnose.cmd, and analyze the newest %ProgramData%\DriverDoctor\*\snapshot.json and report.html: collection errors first, then the built-in display verdict and its evidence. Do not run Repair or change system state without my approval.

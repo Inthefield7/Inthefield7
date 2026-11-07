@@ -9,7 +9,7 @@ Windows driver and firmware health tool. It was built for an HP ENVY x360 16 (20
 
 1. Download this repo as a ZIP, extract it, and open `tools\driver-doctor`.
    The tool runs as administrator, so keep it where only administrators can change it: copy the `driver-doctor` folder to `C:\Program Files\DriverDoctor` (Windows asks for administrator approval) and run it from there. Run from `Downloads` or the Desktop, any program running as you could edit the scripts between your double-click and the UAC prompt, and the edited code would run as administrator.
-2. Double-click **`Run-Diagnose.cmd`** and accept the UAC prompt. The report opens from `Desktop\DriverDoctor\<timestamp>\report.html`.
+2. Double-click **`Run-Diagnose.cmd`** and accept the UAC prompt. The console prints the report path, a new `%ProgramData%\DriverDoctor\<timestamp>` folder that only administrators can change and that you can read. Open `report.html` from File Explorer: an administrator run never opens it itself, because the browser would then run as administrator, and the choice of browser comes from a registry key any program running as you could change. (Run without administrator rights, the report goes to `Desktop\DriverDoctor\<timestamp>` and opens by itself.)
 3. Read the **Built-in display** section first. When you are ready, double-click **`Run-Repair.cmd`**. To see the plan without changing anything, run:
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\DriverDoctor.ps1 -Mode Repair -WhatIf
@@ -40,7 +40,7 @@ Run this before you restart or install anything. It only reads, and finishes in 
 powershell -ExecutionPolicy Bypass -File .\diagnostics\Get-DisplayChange.ps1
 ```
 
-It writes `Desktop\DisplayChange-<timestamp>.txt`. The file compares the current state with the 2026-08-26 evidence: which GPU driver is installed now, whether the staged firmware capsule was applied, the BIOS version, whether the built-in panel is present and active, and a timeline of driver installs, Windows Updates, boots (full boot vs. Fast Startup) and recent sleep/resume. It lists facts only; the cause is decided from what connects.
+It writes `DisplayChange-<timestamp>.txt`: elevated, into a new `%ProgramData%\DriverDoctor\<timestamp>` folder (printed at the end); otherwise to the Desktop. The file compares the current state with the 2026-08-26 evidence: which GPU driver is installed now, whether the staged firmware capsule was applied, the BIOS version, whether the built-in panel is present and active, and a timeline of driver installs, Windows Updates, boots (full boot vs. Fast Startup) and recent sleep/resume. It lists facts only; the cause is decided from what connects.
 
 ## What it checks
 

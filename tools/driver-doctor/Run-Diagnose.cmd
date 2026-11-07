@@ -1,5 +1,5 @@
 @echo off
-rem Driver Doctor - read-only diagnosis. Elevates (UAC prompt) and writes a report to your Desktop.
+rem Driver Doctor - read-only diagnosis. Elevates (UAC prompt); the report path is printed at the end.
 rem SEC-003: this runs as administrator, so keep the folder where only administrators can change it
 rem (see README). The path reaches PowerShell through an environment variable, never as code, so a
 rem quote or $ in a folder name cannot break or change the elevation command.

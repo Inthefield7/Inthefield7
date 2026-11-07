@@ -397,8 +397,11 @@ function Get-DDAdminWorkDir {
     # driver backup that the undo advice tells the user to reinstall with pnputil. The Desktop work
     # folder is writable by any program the user runs, which could swap a file or plant a junction
     # before it is used. Throws instead of falling back to a weaker folder.
-    # -Root exists for tests only.
-    param([string]$Root = (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'DriverDoctor'))
+    # -Root exists for tests only. -LeafSddl lets the report folder add read access for the user.
+    param(
+        [string]$Root = (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'DriverDoctor'),
+        [string]$LeafSddl = $script:DDAdminOnlySddl
+    )
     $root = $Root
     if (-not (Test-Path -LiteralPath $root)) {
         try { New-DDSecureDirectory $root } catch { if (-not (Test-Path -LiteralPath $root)) { throw } }   # lost a creation race: checked below
@@ -406,14 +409,32 @@ function Get-DDAdminWorkDir {
     foreach ($check in 1, 2) {
         $item = Get-Item -LiteralPath $root -Force
         if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw "$root is a link or junction; work folders are not created there." }
-        if (-not (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $root).Sddl)) { throw "$root can be changed by non-administrators; work folders are not created there. Remove it (as administrator) and re-run." }
+        # NEW-4: the root must also be OWNED by SYSTEM/Administrators/TrustedInstaller. A user who
+        # creates the folder first stays its owner and can keep a WRITE_DAC handle open, so a DACL
+        # that looks administrators-only is not enough there.
+        if (-not (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $root).Sddl -RequireTrustedOwner)) { throw "$root can be changed by non-administrators; work folders are not created there. Remove it (as administrator) and re-run." }
         if ($check -eq 1) {
             $leaf = Join-Path $root ('{0}-{1}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), [guid]::NewGuid().ToString('N').Substring(0, 8))
-            New-DDSecureDirectory $leaf
+            New-DDSecureDirectory -Path $leaf -Sddl $LeafSddl
         }
     }
     if (-not (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $leaf).Sddl)) { throw "$leaf did not get an administrators-only ACL." }
     return $leaf
+}
+
+function Get-DDElevatedOutputDir {
+    # NEW-2: where an elevated run writes report.html, snapshot.json, findings.json and the console
+    # log. The Desktop path comes from HKCU (the user can point it anywhere) and a timestamped folder
+    # there can be pre-planted as a junction, so writing there as administrator could create or
+    # overwrite files anywhere. Instead: a new folder only administrators can change, which the
+    # signed-in user can read (so the report opens in a normal, non-elevated browser). There is no
+    # way to choose the folder: an explicit path has a parent the user may control (rename the new
+    # folder away, drop a junction) and its own create-then-write race. -Root: tests only.
+    param([string]$Root)
+    $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $sddl = $script:DDAdminOnlySddl + "(A;OICI;0x1200a9;;;$me)"
+    if ($Root) { return (Get-DDAdminWorkDir -Root $Root -LeafSddl $sddl) }
+    return (Get-DDAdminWorkDir -LeafSddl $sddl)
 }
 
 function Get-DDHPIAAnalysis {

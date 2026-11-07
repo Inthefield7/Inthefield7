@@ -310,6 +310,77 @@ if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
     }
 }
 
+function Invoke-DDOffline {
+    # Runs DriverDoctor.ps1 on the screenshot snapshot in a child process. Not elevated: -OutputPath
+    # points at a temp folder. Elevated: no -OutputPath (it is refused), the folder is read from the
+    # "Output:" line; Remove-DDOfflineOutput deletes it (and %ProgramData%\DriverDoctor if the run made it).
+    param([string[]]$ExtraArgs = @())   # not $Args: that is an automatic variable and would not bind
+    $elev = ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) -and ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $pdRoot = if ($env:ProgramData) { Join-Path $env:ProgramData 'DriverDoctor' } else { '' }
+    $rootExisted = $pdRoot -and (Test-Path -LiteralPath $pdRoot)
+    $dir = Join-Path ([IO.Path]::GetTempPath()) ("dd-test-" + [guid]::NewGuid().ToString('N'))
+    $all = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $root 'DriverDoctor.ps1'), '-SnapshotPath', (Join-Path $fixtures 'envy-screenshots.snapshot.json'), '-NoOpen') + $ExtraArgs
+    if (-not $elev -and ($ExtraArgs -notcontains '-OutputPath')) { $all += @('-OutputPath', $dir) }
+    $errFile = Join-Path ([IO.Path]::GetTempPath()) ("dd-err-" + [guid]::NewGuid().ToString('N') + '.txt')
+    # Stderr goes to a file: in 5.1, 'Stop' turns the first native stderr line into a terminating error.
+    $p = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $all -Wait -PassThru -NoNewWindow -RedirectStandardError $errFile -RedirectStandardOutput ($errFile + '.out')
+    $out = [IO.File]::ReadAllText($errFile + '.out'); $err = [IO.File]::ReadAllText($errFile)
+    Remove-Item -LiteralPath $errFile, ($errFile + '.out') -Force -ErrorAction SilentlyContinue
+    if ($elev) { $m = [regex]::Match($out, '(?m)^Output: (.+?)\s*$'); $dir = if ($m.Success) { $m.Groups[1].Value } else { '' } }
+    # Both hosts wrap a long error message when stderr is a file (pwsh adds "|" margins), so matches
+    # run against a one-line copy.
+    $errFlat = ($err -replace '[\r\n]+\s*\|?\s*', ' ') -replace '\s{2,}', ' '
+    return [pscustomobject]@{ Exit = $p.ExitCode; Out = $out; Err = $err; ErrFlat = $errFlat; Dir = $dir; Elevated = $elev; RootExisted = $rootExisted; PdRoot = $pdRoot }
+}
+function Remove-DDOfflineOutput {
+    # .NET delete: Remove-Item -Recurse on 5.1 sometimes leaves the folder behind ("directory not empty").
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+    param($Run)
+    if ($Run.Dir -and (Test-Path -LiteralPath $Run.Dir)) { try { [IO.Directory]::Delete($Run.Dir, $true) } catch { Write-Host "  (cleanup: could not delete $($Run.Dir): $($_.Exception.Message))" -ForegroundColor Yellow } }
+    if ($Run.Elevated -and -not $Run.RootExisted -and $Run.PdRoot -and (Test-Path -LiteralPath $Run.PdRoot) -and @(Get-ChildItem -LiteralPath $Run.PdRoot -Force).Count -eq 0) { try { [IO.Directory]::Delete($Run.PdRoot) } catch { Write-Host "  (cleanup: could not delete $($Run.PdRoot))" -ForegroundColor Yellow } }
+}
+
+Write-Host 'Scenario S5: NEW-1/2/4 elevated output and report opening' -ForegroundColor Cyan
+$uo = 'O:S-1-5-21-1-2-3-1001D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;OW)'
+Test-That 'NEW-4: a user-owned root is refused even with an administrators-only-looking DACL' { (Test-DDAdminOnlySddl $uo) -and -not (Test-DDAdminOnlySddl $uo -RequireTrustedOwner) -and (Test-DDAdminOnlySddl $script:DDAdminOnlySddl -RequireTrustedOwner) }
+$ddText = [IO.File]::ReadAllText((Join-Path $root 'DriverDoctor.ps1'))
+Test-That 'NEW-1: the report is opened only on the non-elevated branch' {
+    @([regex]::Matches($ddText, 'Start-Process \$reportPath')).Count -eq 1 -and $ddText -match 'if \(\$elevated\) \{ Write-Host ''It is not opened automatically from an administrator window[^\r\n]*\r?\n\s*elseif \(-not \$NoOpen -and \$onWindows\) \{ & \{ \$WhatIfPreference = \$false; Start-Process \$reportPath \} \}'
+}
+if (($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) -and ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    . (Join-Path $root 'lib\DD.Collect.ps1')
+    $s5 = Join-Path ([IO.Path]::GetTempPath()) ('dd-new2-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $s5 | Out-Null
+    $me5 = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    try {
+        $od = Get-DDElevatedOutputDir -Root (Join-Path $s5 'pd')
+        $oacl = Get-Acl -LiteralPath $od
+        $mine = @($oacl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq $me5 })
+        Test-That 'elevated: output folder is administrators-only, and the user may only read it' {
+            (Test-DDAdminOnlySddl $oacl.Sddl) -and $mine.Count -eq 1 -and $mine[0].AccessControlType -eq 'Allow' -and
+            ([int]$mine[0].FileSystemRights -band (0x2 -bor 0x4 -bor 0x10000 -bor 0x40000 -bor 0x80000)) -eq 0 -and ([int]$mine[0].FileSystemRights -band 0x1) -ne 0
+        }
+        $uroot = Join-Path $s5 'userroot'
+        New-DDSecureDirectory -Path $uroot -Sddl "O:$($me5)D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;OW)"
+        Test-That 'elevated: work-folder root owned by the user is refused (NEW-4)' { $m = ''; try { Get-DDAdminWorkDir -Root $uroot | Out-Null } catch { $m = $_.Exception.Message }; $m -match 'non-administrators' -and @(Get-ChildItem -LiteralPath $uroot -Force).Count -eq 0 }
+        # End to end, elevated: -OutputPath is refused before anything is written, even an empty new folder.
+        $pre = Join-Path $s5 'chosen'
+        $r5 = Invoke-DDOffline -ExtraArgs @('-OutputPath', $pre)
+        Test-That 'elevated: DriverDoctor refuses -OutputPath and writes nothing' { $r5.Exit -ne 0 -and $r5.ErrFlat -match 'not accepted when running as administrator' -and -not (Test-Path -LiteralPath $pre) }
+        # End to end, elevated, default: a new administrators-only folder under %ProgramData%\DriverDoctor.
+        $r6 = Invoke-DDOffline
+        Test-That 'elevated: DriverDoctor writes the report into a new administrators-only ProgramData folder and does not open it' {
+            $r6.Exit -eq 0 -and $r6.Dir -like (Join-Path $env:ProgramData 'DriverDoctor\*') -and (Test-Path -LiteralPath (Join-Path $r6.Dir 'report.html')) -and
+            (Test-DDAdminOnlySddl (Get-Acl -LiteralPath $r6.Dir).Sddl) -and $r6.Out -match 'not opened automatically'
+        }
+        Remove-DDOfflineOutput $r6
+        $dcText = [IO.File]::ReadAllText((Join-Path $root 'diagnostics\Get-DisplayChange.ps1'))
+        Test-That 'Get-DisplayChange refuses -OutputPath when elevated, before collecting' { $dcText -match '(?s)if \(\$isAdmin -and \$OutputPath\) \{ throw ''-OutputPath is not accepted.*?Invoke-DCStep ''System info''' }
+    }
+    finally { Remove-Item -LiteralPath $s5 -Recurse -Force -ErrorAction SilentlyContinue }
+}
+else { Write-Host '  SKIP elevated output-folder tests (not running as administrator)' -ForegroundColor Yellow }
+
 Write-Host 'Scenario S3: SEC-003 launchers pass their own path safely' -ForegroundColor Cyan
 foreach ($ln in 'Run-Diagnose.cmd', 'Run-Repair.cmd') {
     $lt = [IO.File]::ReadAllText((Join-Path $root $ln))
@@ -527,19 +598,15 @@ $ob3 = @(Get-DCObservations -State $unread) -join "`n"
 Test-That 'observations: failed collection says NOT READ, never "none"' { ($ob3 -match 'Active monitors: NOT READ') -and ($ob3 -match 'Kernel-PnP configuration log: NOT READ') -and ($ob3 -notmatch 'NO active internal') -and ($ob3 -notmatch 'No GPU start failure') -and ($ob3 -notmatch 'Active monitor now') }
 
 Write-Host 'End to end (offline snapshot mode)' -ForegroundColor Cyan
-$out = Join-Path ([IO.Path]::GetTempPath()) ("dd-test-" + [guid]::NewGuid().ToString('N'))
-$pwshExe = (Get-Process -Id $PID).Path
-& $pwshExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'DriverDoctor.ps1') -SnapshotPath (Join-Path $fixtures 'envy-screenshots.snapshot.json') -OutputPath $out -NoOpen | Out-Null
-Test-That 'DriverDoctor.ps1 exits 0' { $LASTEXITCODE -eq 0 }
-Test-That 'report.html and findings.json written' { (Test-Path (Join-Path $out 'report.html')) -and (Test-Path (Join-Path $out 'findings.json')) }
-Test-That 'findings.json verdict round-trips' { (Get-Content -Raw (Join-Path $out 'findings.json') | ConvertFrom-Json).Verdict.State -eq 'NotDetected-GpuFault' }
-# The refusal is written to stderr. In 5.1, 'Stop' turns the first native stderr line into a
-# terminating NativeCommandError, so relax it around this one call (see Invoke-DDNative).
-$eap = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-try { & $pwshExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'DriverDoctor.ps1') -SnapshotPath (Join-Path $fixtures 'envy-screenshots.snapshot.json') -Mode Repair -OutputPath $out -NoOpen 2>$null | Out-Null }
-finally { $ErrorActionPreference = $eap }
-Test-That 'Repair refuses to run on a snapshot' { $LASTEXITCODE -ne 0 }
+$e2e = Invoke-DDOffline
+$out = $e2e.Dir
+Test-That 'DriverDoctor.ps1 exits 0' { $e2e.Exit -eq 0 }
+Test-That 'report.html and findings.json written' { $out -and (Test-Path (Join-Path $out 'report.html')) -and (Test-Path (Join-Path $out 'findings.json')) }
+Test-That 'findings.json verdict round-trips' { $out -and (Get-Content -Raw (Join-Path $out 'findings.json') | ConvertFrom-Json).Verdict.State -eq 'NotDetected-GpuFault' }
+Remove-DDOfflineOutput $e2e
+$e2r = Invoke-DDOffline -ExtraArgs @('-Mode', 'Repair')
+Test-That 'Repair refuses to run on a snapshot' { $e2r.Exit -ne 0 -and $e2r.ErrFlat -match 'cannot be combined with -SnapshotPath' }
+Remove-DDOfflineOutput $e2r
 
 Write-Host ''
 $color = if ($script:failed.Count -eq 0) { 'Green' } else { 'Red' }

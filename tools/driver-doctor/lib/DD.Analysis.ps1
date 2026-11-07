@@ -268,7 +268,8 @@ function Test-DDAdminOnlySddl {
     # change permissions. Read access for others is allowed. The owner must be one of those three,
     # or else an OWNER RIGHTS ACE that applies to this object must take away the owner's implicit
     # permission to change the ACL. CREATOR OWNER is accepted only as an inherit-only ACE.
-    param([string]$Sddl)
+    # -RequireTrustedOwner (NEW-4): no OWNER RIGHTS exception; for a folder the tool did not create.
+    param([string]$Sddl, [switch]$RequireTrustedOwner)
     if (-not $Sddl) { return $false }
     $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
     # WRITE_DATA/ADD_FILE, APPEND/ADD_SUBDIR, WRITE_EA, DELETE_CHILD, WRITE_ATTRIBUTES, DELETE,
@@ -290,7 +291,7 @@ function Test-DDAdminOnlySddl {
         if ($sid -eq 'S-1-3-0' -and $io) { continue }
         return $false
     }
-    if ($trusted -notcontains $sd.Owner.Value -and -not $ownerRightsHere) { return $false }
+    if ($trusted -notcontains $sd.Owner.Value -and ($RequireTrustedOwner -or -not $ownerRightsHere)) { return $false }
     return $true
 }
 

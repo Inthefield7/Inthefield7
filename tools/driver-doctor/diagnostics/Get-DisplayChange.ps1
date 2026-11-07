@@ -216,6 +216,9 @@ function Add-DCEvents {
 $isAdmin = $false
 try { $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { $isAdmin = $false }
 if (-not $isAdmin) { $state.Errors.Add('Not elevated: some event logs may be incomplete. Re-run in an elevated PowerShell.') }
+# NEW-2: as administrator, never write to a path the user chose (its parent may be user-controlled).
+# Checked here, before the slow collection, so a wrong invocation fails at once.
+if ($isAdmin -and $OutputPath) { throw '-OutputPath is not accepted when running as administrator: the file goes to a new administrators-only folder under %ProgramData%\DriverDoctor (printed at the end). Run from a normal PowerShell window to choose the path.' }
 
 Invoke-DCStep 'System info' {
     $cs = Get-CimInstance Win32_ComputerSystem
@@ -344,7 +347,15 @@ foreach ($t in @($state.Timeline | Sort-Object Time)) { $lines.Add(('{0:yyyy-MM-
 $lines.Add('')
 $lines.Add('This file holds the computer name, user name (in restart events) and device IDs. Read it before sharing.')
 
-if (-not $OutputPath) { $OutputPath = Join-Path ([Environment]::GetFolderPath('Desktop')) ('DisplayChange-{0:yyyyMMdd-HHmmss}.txt' -f (Get-Date)) }
+$fileName = 'DisplayChange-{0:yyyyMMdd-HHmmss}.txt' -f (Get-Date)
+if ($isAdmin) {
+    # NEW-2: as administrator, never write to a predictable name in a user-controlled folder (the
+    # Desktop path comes from HKCU and the name could be pre-planted as a link). An explicit path was
+    # refused above. A new administrators-only folder the user can read.
+    . (Join-Path (Split-Path $PSScriptRoot -Parent) 'lib\DD.Collect.ps1')
+    $OutputPath = Join-Path (Get-DDElevatedOutputDir) $fileName
+}
+elseif (-not $OutputPath) { $OutputPath = Join-Path ([Environment]::GetFolderPath('Desktop')) $fileName }
 $lines | Set-Content -LiteralPath $OutputPath -Encoding UTF8
 Write-Host ''
 Write-Host '== OBSERVATIONS ==' -ForegroundColor Cyan
