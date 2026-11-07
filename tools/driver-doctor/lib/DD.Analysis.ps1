@@ -545,10 +545,15 @@ function Get-DDInternalDisplayVerdict {
     $monitors = @(Get-DDArray $Snapshot.Devices | Where-Object { Test-DDClass $_ 'Monitor' })
     # Two different 442 facts. Every 442 for ANY new monitor names the panel's old instance as
     # "Last Device Instance ID" with present=false, so:
-    #  - $migrations (matched on LastInstanceId) only feeds the GPU same-boot link below, which
-    #    cites that field explicitly;
+    #  - $migrations feed only the GPU same-boot link below. The last-instance field must name the
+    #    panel AND the event's own device must be the panel itself or DISPLAY\Default_Monitor (the
+    #    generic device Windows uses when it cannot identify a screen). An external monitor's 442
+    #    only says a new monitor appeared, not that the panel was missing.
     #  - $panelMigrations (matched on the event's own device) are the only 442s listed as panel events.
-    $migrations = @(Get-DDArray $Snapshot.PnpEvents | Where-Object { $_.Id -eq 442 -and $_.LastInstanceId -and (Test-DDLikelyPanelInstance $_.LastInstanceId) })
+    $migrations = @(Get-DDArray $Snapshot.PnpEvents | Where-Object {
+            $_.Id -eq 442 -and $_.LastInstanceId -and (Test-DDLikelyPanelInstance $_.LastInstanceId) -and
+            ((Test-DDLikelyPanelInstance $_.DeviceInstanceId) -or ([string]$_.DeviceInstanceId -like 'DISPLAY\Default_Monitor\*'))
+        })
     $panelMigrations = @(Get-DDArray $Snapshot.PnpEvents | Where-Object { $_.Id -eq 442 -and $_.DeviceInstanceId -and (Test-DDLikelyPanelInstance $_.DeviceInstanceId) })
     $evidence = New-Object System.Collections.Generic.List[string]
 

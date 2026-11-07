@@ -157,6 +157,11 @@ Test-That 'GPU finding downgraded to Low history (not current state)' { $gf = Fi
 Test-That 'history verdict still plans GPU restart + driver steps' { $t = @((Find-F $g2 'INTERNAL-PANEL').Actions | ForEach-Object { $_.Type }); ($t -contains 'RestartDevice') -and ($t -contains 'ScanDevices') }
 $s = Get-Base; $s.Meta.LastBoot = '2026-10-01T12:00:00.0000000Z'; $s.PnpEvents = @($s.PnpEvents | Where-Object { $_.Id -ne 442 })
 Test-That 'without the 442 link, no driver blame (NotDetected)' { (Invoke-DDAnalysis -Snapshot $s).Verdict.State -eq 'NotDetected' }
+# Review finding 2: every new monitor's 442 names the panel as last instance, so an external
+# monitor's 442 in the GPU-failure boot must not be read as "panel not present".
+$s = Get-Base; $s.Meta.LastBoot = '2026-10-01T12:00:00.0000000Z'
+foreach ($e in @($s.PnpEvents | Where-Object { $_.Id -eq 442 })) { $e.DeviceInstanceId = 'DISPLAY\ACR0EAB\4&5423816&e&UID49' }
+Test-That 'external monitor 442 in the GPU-failure boot -> no same-boot link (NotDetected)' { $x = Invoke-DDAnalysis -Snapshot $s; $x.Verdict.State -eq 'NotDetected' -and (($x.Verdict.Evidence -join ' ') -notmatch 'same boot') }
 
 Write-Host 'Scenario H: firmware deferred for AC power' -ForegroundColor Cyan
 $s = Get-Base; $s.Firmware[0].LastAttemptStatus = -1073741101
