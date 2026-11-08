@@ -1054,6 +1054,13 @@ Test-That 'observations: panel configure time reported; a Default_Monitor 442 is
 # panel in "Last Device Instance ID"; only the 08-29 one is ABOUT the panel.
 Test-That 'event device: 442 yields its own device, not Last Device Instance ID' { (Get-DCEventDevice 'Device settings for DISPLAY\DELD081\4&5423816&e&UID4165 were not migrated from previous OS installation due to partial or ambiguous device match. | Last Device Instance ID=DISPLAY\CMN163B\4&5423816&0&UID0 | Present=false') -eq 'DISPLAY\DELD081\4&5423816&e&UID4165' }
 Test-That 'event device: 400/411 yield the configured device' { ((Get-DCEventDevice "Device $gpuId had a problem starting. | Driver Name=oem39.inf") -eq $gpuId) -and ((Get-DCEventDevice 'Device DISPLAY\CMN163B\4&5423816&e&UID8388688 was started. | Service=monitor') -eq 'DISPLAY\CMN163B\4&5423816&e&UID8388688') }
+# Regression: the 2026-11-08 report printed the panel's empty friendly name as a NUL ("( , connection INTERNAL").
+Test-That 'monitor name: $null and zero padding decode to text without NUL' {
+    ((ConvertFrom-DCWmiString $null) -ceq '') -and ((ConvertFrom-DCWmiString ([uint16[]](0, 0, 0))) -ceq '') -and
+    ((ConvertFrom-DCWmiString ([uint16[]](68, 69, 76, 76, 0, 0))) -ceq 'DELL') -and ((ConvertFrom-DCWmiString $null) -notmatch "`0")
+}
+$dcSrc = [IO.File]::ReadAllText((Join-Path $root 'diagnostics\Get-DisplayChange.ps1'))
+Test-That 'monitor name: the collector uses the decoder, not a pipeline over $null' { $dcSrc -match '\$name = ConvertFrom-DCWmiString \$m\.UserFriendlyName' -and $dcSrc -notmatch 'UserFriendlyName \| Where-Object' }
 Test-That 'event device: unparsed (localized) text drops the key fields' { (Get-DCEventDevice 'Geraet X wurde konfiguriert. | Last Device Instance ID=DISPLAY\CMN163B\4&5423816&0&UID0') -notmatch 'CMN163B' }
 $live = $recovered.PSObject.Copy()
 $live.Timeline = @(

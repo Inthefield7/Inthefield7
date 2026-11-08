@@ -112,6 +112,14 @@ function Get-DCEventDevice {
     return (($Text -split ' \| ')[0])
 }
 
+function ConvertFrom-DCWmiString {
+    # WmiMonitorID names are zero-padded UInt16 arrays, or $null when the monitor reports none.
+    # Piping $null sends one $null item, which [char] turns into a NUL in the report file; a foreach
+    # over @() with a truthiness check skips $null and the 0 padding alike.
+    param($Codes)
+    return (@(foreach ($c in @($Codes)) { if ($c) { [char][int]$c } }) -join '')
+}
+
 function Get-DCObservations {
     # Facts only, each with its source. Interpretation is left to the reader.
     param($State)
@@ -275,7 +283,7 @@ $techName = @{ '0' = 'VGA'; '4' = 'DVI'; '5' = 'HDMI'; '6' = 'LVDS'; '10' = 'Dis
 Invoke-DCStep 'Active monitors' {
     $ids = @{}
     foreach ($m in @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID -ErrorAction Stop)) {
-        $name = (@($m.UserFriendlyName | Where-Object { $_ -ne 0 } | ForEach-Object { [char]$_ }) -join '')
+        $name = ConvertFrom-DCWmiString $m.UserFriendlyName
         $ids[$m.InstanceName] = $name
     }
     $state.ActiveMonitors = @(foreach ($c in @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorConnectionParams -ErrorAction Stop)) {
