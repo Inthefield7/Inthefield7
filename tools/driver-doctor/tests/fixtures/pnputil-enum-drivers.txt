@@ -1,0 +1,25 @@
+Microsoft PnP Utility
+
+Published Name:     oem39.inf
+Original Name:      iigd_dch.inf
+Provider Name:      Intel Corporation
+Class Name:         Display adapters
+Class GUID:         {4d36e968-e325-11ce-bfc1-08002be10318}
+Driver Version:     07/12/2024 32.0.101.5768
+Signer Name:        Microsoft Windows Hardware Compatibility Publisher
+
+Published Name:     oem32.inf
+Original Name:      hpfirmware.inf
+Provider Name:      HP Inc.
+Class Name:         Firmware
+Class GUID:         {f2e7dd72-6468-4e36-b6f1-6488f42c1b52}
+Driver Version:     08/01/2026 1.12.0.0
+Signer Name:        Microsoft Windows Hardware Compatibility Publisher
+
+Published Name:     oem5.inf
+Original Name:      realtekaudio.inf
+Provider Name:      Realtek
+Class Name:         Sound, video and game controllers
+Class GUID:         {4d36e96c-e325-11ce-bfc1-08002be10318}
+Driver Version:     01/02/2025 6.0.9700.1
+Signer Name:        Microsoft Windows Hardware Compatibility Publisher
