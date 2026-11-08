@@ -1081,6 +1081,80 @@ $unread = [pscustomobject]@{ Gpus = $null; Monitors = $null; ActiveMonitors = $n
 $ob3 = @(Get-DCObservations -State $unread) -join "`n"
 Test-That 'observations: failed collection says NOT READ, never "none"' { ($ob3 -match 'Active monitors: NOT READ') -and ($ob3 -match 'Kernel-PnP configuration log: NOT READ') -and ($ob3 -notmatch 'NO active internal') -and ($ob3 -notmatch 'No GPU start failure') -and ($ob3 -notmatch 'Active monitor now') }
 
+Write-Host 'Scenario M: elevated DisplayChange report from the laptop (2026-11-08, panel working again)' -ForegroundColor Cyan
+# Real Get-DisplayChange.ps1 output, run elevated; computer and user names replaced. The raw sections
+# (adapters, monitors, firmware, timeline) are parsed back into a state, and Get-DCObservations must
+# rebuild the report's own OBSERVATIONS section line for line. Active monitors, BIOS and last boot are
+# printed only as observation lines, so those three are read from there: inputs, not checks.
+$dcFixRaw = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $fixtures 'envy-displaychange-20261108.txt')
+$dcFix = @($dcFixRaw -split "`r?`n")
+function Get-DCFixSection {
+    param([string]$Prefix)
+    $in = $false
+    foreach ($l in $dcFix) {
+        if ($l -like '== *') { $in = $l -like "== $Prefix*"; continue }
+        if ($in -and $l) { $l }
+    }
+}
+$inv = [Globalization.CultureInfo]::InvariantCulture
+$obsFix = @(Get-DCFixSection 'OBSERVATIONS')
+$gpusFix = @(Get-DCFixSection 'DISPLAY ADAPTERS' | ForEach-Object {
+    $p = $_ -split ' \| '
+    $d = $p[4] -split ' '
+    [pscustomobject]@{ Name = $p[0]; Present = ($p[1] -eq 'present=True'); Status = $p[2]; Problem = [int]($p[3] -replace '^problem ', ''); Inf = $d[0]; Version = $d[1].TrimStart('v'); Date = $d[2]; InstanceId = $p[5] }
+})
+$monsFix = @(Get-DCFixSection 'MONITOR DEVICES' | ForEach-Object {
+    $p = $_ -split ' \| '
+    [pscustomobject]@{ Name = $p[0]; Present = ($p[1] -eq 'present=True'); Status = $p[2]; InstanceId = $p[3] }
+})
+$fwFix = @(Get-DCFixSection 'FIRMWARE RESOURCES' | ForEach-Object {
+    $p = $_ -split ' \| '
+    [pscustomobject]@{ Guid = $p[0]; Version = ($p[1] -replace '^version ', ''); LastAttemptVersion = ($p[2] -replace '^last attempted ', ''); LastAttemptStatus = (ConvertTo-DDInt ($p[3] -replace '^last status ', '')) }
+})
+$activeFix = @(); $biosFix = $null; $bootFix = $null; $fastFix = $null
+foreach ($o in $obsFix) {
+    if ($o -match '^Active monitor now: (\S+) \((.*), connection (\S+), (INTERNAL|external)\) \[VERIFIED\]$') {
+        $activeFix += [pscustomobject]@{ InstanceName = $Matches[1]; Name = $Matches[2]; Technology = $Matches[3]; Internal = ($Matches[4] -ceq 'INTERNAL') }
+    }
+    elseif ($o -match '^BIOS now: (.+), release date (\S+) \[VERIFIED\]$') { $biosFix = [pscustomobject]@{ Version = $Matches[1]; ReleaseDate = $Matches[2] } }
+    elseif ($o -match '^Last boot: (.+); Fast Startup enabled: (True|False) \[VERIFIED\]$') { $bootFix = $Matches[1]; $fastFix = ($Matches[2] -eq 'True') }
+}
+# Report lines are in event order but print whole seconds; one tick per line keeps that order through Sort-Object.
+$tlFix = New-Object System.Collections.Generic.List[object]
+$tlOther = @()
+$k = 0
+foreach ($l in @(Get-DCFixSection 'TIMELINE')) {
+    if ($l -match '^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \| (\S+)\s*\| (\d*)\s*\| (.*)$') {
+        $k++
+        $id = $null
+        if ($Matches[3]) { $id = [int]$Matches[3] }
+        $tlFix.Add([pscustomobject]@{ Time = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', $inv).AddTicks($k); Source = $Matches[2]; Id = $id; Text = $Matches[4] })
+    }
+    else { $tlOther += $l }
+}
+$dcFixState = [pscustomobject]@{
+    Gpus = $gpusFix; Monitors = $monsFix; ActiveMonitors = $activeFix; Firmware = $fwFix; Bios = $biosFix
+    Os = [pscustomobject]@{ LastBoot = $bootFix }; FastStartup = $fastFix; PnpRead = $true; Timeline = $tlFix.ToArray()
+}
+$rebuilt = @(Get-DCObservations -State $dcFixState)
+Test-That 'displaychange fixture: redacted, elevated run, no collection errors' {
+    ($dcFixRaw -notmatch '(?i)ENVY7|erikd') -and ($dcFixRaw -match 'REDACTED-PC\\REDACTED-USER') -and (@(Get-DCFixSection 'COLLECTION ERRORS') -join '|') -eq '(none)'
+}
+Test-That 'displaychange fixture: every raw line parsed' {
+    $gpusFix.Count -eq 1 -and $monsFix.Count -eq 8 -and $fwFix.Count -eq 1 -and $tlFix.Count -gt 250 -and
+    $activeFix.Count -eq 2 -and $biosFix -and $bootFix -and ($tlOther.Count -eq 1) -and ($tlOther[0] -like 'This file holds the computer name*')
+}
+Test-That 'displaychange fixture: observations rebuilt from its raw sections match the report line for line' { ($rebuilt -join "`n") -ceq ($obsFix -join "`n") }
+Test-That 'displaychange fixture: GPU still runs the same oem39.inf, status OK, problem 0' { ($rebuilt -join "`n") -match "GPU 'Intel\(R\) Graphics': status OK, problem code 0, driver oem39\.inf v32\.0\.101\.6733 .*same package name.*not replaced" -and ($rebuilt -join "`n") -notmatch 'DIFFERENT package' }
+Test-That 'displaychange fixture: panel present and active on the internal connection' { ($rebuilt -contains 'Panel device DISPLAY\CMN163B\4&5423816&E&UID8388688: present=True, status OK [VERIFIED]') -and (($rebuilt -join "`n") -match 'Active monitor now: DISPLAY\\CMN163B\\\S+ \(.*, connection INTERNAL, INTERNAL\)') -and (($rebuilt -join "`n") -notmatch 'NO active internal') }
+Test-That 'displaychange fixture: firmware capsule 0xC0000058 is NOT applied' { ($rebuilt -join "`n") -match 'last status 0xC0000058 .*NOT applied' -and ($rebuilt -join "`n") -notmatch 'APPLIED:' }
+Test-That 'displaychange fixture: only GPU failure is 2026-08-26; panel back by its own 442 + 400 on 2026-08-29' {
+    ($rebuilt -contains 'Last GPU start failure (411): 2026-08-26 19:49:44 [VERIFIED]') -and
+    ($rebuilt -contains 'Last settings-migration event (442) for the panel device itself (DISPLAY\CMN163B\4&5423816&e&UID8388688): 2026-08-29 13:57:54 [VERIFIED]') -and
+    ($rebuilt -contains 'First panel configure/start event at or after that 442: 2026-08-29 13:57:54 (event 400, DISPLAY\CMN163B\4&5423816&e&UID8388688) [VERIFIED]') -and
+    @($rebuilt | Where-Object { $_ -like 'GPU driver configured (400) at *' -and $_ -notlike '* at 2026-08-26 19:49:43:*' }).Count -eq 0
+}
+
 Write-Host 'End to end (offline snapshot mode)' -ForegroundColor Cyan
 $e2e = Invoke-DDOffline
 $out = $e2e.Dir

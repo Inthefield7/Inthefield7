@@ -104,7 +104,9 @@ lib/DisplayConfig.cs    QueryDisplayConfig / SetDisplayConfig interop (C# 5, com
 diagnostics/            standalone read-only checks (Test-BonjourLsa.ps1: Bonjour/LSA dialog root cause;
                         Get-DisplayChange.ps1: what changed since 2026-08-26 when the panel works again)
 tests/Run-Tests.ps1     dependency-free tests; fixtures: the 2026-08-26 screenshots and the real
-                        2026-11-06 snapshot (envy-live.snapshot.json, computer name redacted)
+                        2026-11-06 snapshot (envy-live.snapshot.json, computer name redacted), and the
+                        elevated 2026-11-08 Get-DisplayChange report (envy-displaychange-20261108.txt,
+                        computer and user names redacted)
 ```
 
 Run the tests with `pwsh -File tests/Run-Tests.ps1` or `powershell -File tests\Run-Tests.ps1`. The exit code is the number of failures.

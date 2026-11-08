@@ -45,6 +45,7 @@ Done = the built-in panel shows the desktop after a normal boot. The proof is `r
 5. DONE 2026-11-07: the hardware check. External monitor unplugged, power on: the HP logo showed on the built-in panel and Windows booted to the desktop on it. The panel and cable work, so if the fault ever returns it is software (Windows or the driver), and F2 > Component Tests > Video is not needed.
 6. `DriverDoctor.ps1 -Mode Repair -WhatIf`, then review the plan with the user. Only then `Run-Repair.cmd`. The user answers every prompt.
 7. DONE 2026-11-06: `tests/fixtures/envy-live.snapshot.json` (computer name replaced) and "Scenario L" tests pin its verdict `Active`, the GPU history as Low, a plan that never touches the display or GPU, and the still-unapplied firmware capsule.
+8. DONE 2026-11-08: the elevated `Get-DisplayChange.ps1` report saved as `tests/fixtures/envy-displaychange-20261108.txt` (computer name -> `REDACTED-PC`, user name -> `REDACTED-USER`). "Scenario M" parses its raw sections back into a state and requires `Get-DCObservations` to rebuild its OBSERVATIONS section line for line, then pins the facts: same `oem39.inf`, panel present and active on INTERNAL, capsule `0xC0000058` not applied, the only GPU failure on 2026-08-26, and the panel's own 442 + 400 on 2026-08-29.
 
 ## Unverified assumptions (check against the first live snapshot)
 

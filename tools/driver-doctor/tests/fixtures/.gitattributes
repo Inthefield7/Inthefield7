@@ -1,0 +1,2 @@
+# Real report bytes: no line-ending conversion. It holds one NUL (a monitor name Windows left empty), so force text diffs.
+envy-displaychange-*.txt -text diff
